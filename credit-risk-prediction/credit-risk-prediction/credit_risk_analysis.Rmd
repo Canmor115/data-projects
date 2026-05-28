@@ -1,0 +1,1827 @@
+---
+title: 'Credit Risk Prediction with Decision Trees'
+author: "Camila Andrea Moreno Ortiz"
+date: "April 2026"
+output:
+  pdf_document:
+    highlight: zenburn
+    toc: yes
+  html_document:
+    highlight: default
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 2
+  word_document: default
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval=T, echo=T)
+```
+
+# CREDIT RISK PREDICTION
+
+
+En este documento se aborda el problema de predicción de riesgo
+crediticio utilizando el dataset German Credit, compuesto por 1.000
+solicitudes de crédito de un banco alemán con información sobre el
+perfil financiero y sociodemográfico de cada cliente. La variable
+objetivo `default` indica si el cliente incurrió en impago (Default) o
+no (No_default).
+
+El objetivo es construir y evaluar modelos de clasificación basados en
+árboles de decisión capaces de predecir qué clientes tienen mayor
+probabilidad de no devolver el crédito. Dado que el banco establece una
+**matriz de costes asimétrica** (clasificar un cliente moroso como
+solvente cuesta 5 veces más que el error inverso), el análisis no se
+limitará al accuracy global sino que prestará esencial atención al
+**Recall de la clase Default** como métrica prioritaria.
+
+Este trabajo sigue la siguiente estructura:
+
+1.  **Análisis descriptivo**: exploración, preparación y comprensión
+    profunda del dataset antes de modelar.
+2.  **Árbol de decisión**: construcción y evaluación del modelo C5.0
+    base con todas las variables.
+3.  **Reglas del árbol**: extracción e interpretación en lenguaje de
+    negocio de las reglas aprendidas.
+4.  **Bondad de ajuste**: evaluación del modelo sobre datos de test
+    mediante métricas y curva ROC.
+5.  **Modelos alternativos**: comparativa entre C5.0 con pruning, Random
+    Forest y XGBoost, con análisis de explicabilidad.
+6.  **Conclusiones**: síntesis integrada de hallazgos y recomendaciones
+    operativas para el negocio bancario.
+
+## Análisis descriptivo
+
+```{r message=FALSE, warning=FALSE}
+# Limpiar el entorno completamente
+rm(list = ls())
+```
+
+```{r message=FALSE, warning=FALSE}
+# Configuración inicial del entorno y aseguramiento de la reproducibilidad global
+
+# Importación de librerías
+librerias <- c("readr", "dplyr", "ggplot2","gridExtra","patchwork", "C50",
+               "factoextra", "cluster", "randomForest", "iml", "caret",
+               "gmodels", "ROCR", "corrplot", "ggcorrplot", "DescTools",
+               "xgboost", "partykit")
+
+# Instalación de las librerías
+for (lib in librerias) {
+  if (!requireNamespace(lib, quietly = TRUE)) {
+    install.packages(lib)
+  }
+}
+
+# Carga de librerías
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(patchwork)
+library(C50)
+library(randomForest)
+library(iml)
+library(caret)
+library(gmodels)
+library(ROCR)
+library(corrplot)
+library(ggcorrplot)
+library(DescTools)
+library(xgboost)
+library(partykit)
+library(scales)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Carga de datos
+credit <- read_csv("data/credit.csv")
+
+# Visualizamos las dimensiones del dataset
+dim(credit)
+
+# Exploramos la estructura del dataset con glimpse
+glimpse(credit)
+
+# Visualizamos la cantidad de valores nulos
+colSums(is.na(credit))
+
+# Vemos si los datos están ordenados o no viendo las 10 primeras y últimas filas
+head(credit, 10)
+
+tail(credit, 10)
+
+# Visualizamos los valores únicos de las variables consideradas como categóricas
+sapply(credit[, sapply(credit, is.character)], unique)
+
+# Resumen estadístico de las variables consideradas numéricas
+summary(credit)
+
+```
+
+Cabe recalcar que ninguna de las variables contiene valores nulos, por
+lo que en ese sentido, no será necesaria un tratamiento de este tipo de
+valores.
+
+Tras la primera exploración del dataset y su estructura, podemos
+establecer el diccionario de variables de la siguiente manera:
+
+**Variables numéricas continuas**
+
+| Variable | Descripción | Rango observado |
+|----|----|----|
+| `months_loan_duration` | Duración del préstamo en meses | 4 – 72 |
+| `amount` | Importe del crédito en marcos alemanes (DM) | 250 – 18.424 |
+| `age` | Edad del solicitante en años | 19 – 75 |
+
+**Variables consideradas numéricas que son categóricas**
+
+| Variable | Descripción | Valores |
+|----|----|----|
+| `installment_rate` | Cuota del préstamo como % de la renta disponible | 1 (bajo) – 4 (alto) |
+| `residence_history` | Años en la residencia actual | 1 (menos tiempo) – 4 (más tiempo) |
+| `existing_credits` | Número de créditos existentes en este banco | 1 – 4 |
+| `dependents` | Número de personas a cargo | 1 – 2 |
+
+Estas cuatro variables requieren la conversión a 'factor' antes del
+modelado. Tratarlas como numéricas continuas introduciría errores.
+
+**Variables categóricas**
+
+| Variable | Descripción | Niveles |
+|----|----|----|
+| `checking_balance` | Saldo de la cuenta corriente | `< 0 DM`, `1 - 200 DM`, `> 200 DM`, `unknown` |
+| `credit_history` | Historial de crédito previo | `critical`, `delayed`, `fully repaid`, `fully repaid this bank`, `repaid` |
+| `purpose` | Finalidad del préstamo | `business`, `car (new)`, `car (used)`, `domestic appliances`, `education`, `furniture`, `others`, `radio/tv`, `repairs`, `retraining` |
+| `savings_balance` | Saldo en cuentas de ahorro/bonos | `< 100 DM`, `101 - 500 DM`, `501 - 1000 DM`, `> 1000 DM`, `unknown` |
+| `employment_length` | Antigüedad en el empleo actual | `unemployed`, `0 - 1 yrs`, `1 - 4 yrs`, `4 - 7 yrs`, `> 7 yrs` |
+| `personal_status` | Estado civil y sexo | `single male`, `married male`, `divorced male`, `female` |
+| `other_debtors` | Otros deudores o avalistas | `none`, `co-applicant`, `guarantor` |
+| `property` | Bien inmueble o activo más valioso | `real estate`, `building society savings`, `other`, `unknown/none` |
+| `installment_plan` | Otros planes de pago a plazos | `none`, `bank`, `stores` |
+| `housing` | Régimen de vivienda | `own`, `rent`, `for free` |
+| `telephone` | Teléfono registrado a nombre del cliente | `yes`, `none` |
+| `foreign_worker` | Trabajador extranjero | `yes`, `no` |
+| `job` | Tipo de empleo | `unemployed non-resident`, `unskilled resident`, `skilled employee`, `mangement self-employed` |
+
+**Variable objetivo (target)**
+
+| Variable | Descripción | Valores |
+|----|----|----|
+| `default` | Riesgo crediticio del cliente | `1` = No default (buen pagador) · `2` = Default (mal pagador) |
+
+Es el momento de convertir las variables categóricas a factor:
+```{r message=FALSE, warning=FALSE}
+# Comenzamos por la variable objetivo:
+credit$default <- factor(credit$default,
+                         levels = c(1,2),
+                         labels = c("No_default", "Default"))
+
+# Continuamos con las variables "character":
+vars_factor <- c("checking_balance", "credit_history", "purpose",
+                 "savings_balance", "employment_length", "personal_status",
+                 "other_debtors", "property", "installment_plan",
+                 "housing", "telephone", "foreign_worker", "job")
+
+credit[vars_factor] <- lapply(credit[vars_factor], factor)
+
+# Finalizamos con las variables consideradas numéricas:
+credit$installment_rate <- factor(credit$installment_rate, levels = 1:4)
+credit$residence_history <- factor(credit$residence_history, levels = 1:4)
+credit$existing_credits <- factor(credit$existing_credits, levels = 1:4)
+credit$dependents <- factor(credit$dependents, levels = 1:2)
+
+# Verificamos
+glimpse(credit)
+
+```
+
+### Análisis Univariante
+
+Es el momento de visualizar las distribuciones de las variables.
+Comenzando por la **variable objetivo**:
+
+```{r message=FALSE, warning=FALSE}
+# Distribución del target
+table(credit$default)
+prop.table(table(credit$default))
+
+# Graficamos
+ggplot(credit, aes(x = default, fill = default)) +
+  geom_bar() +
+  geom_text(stat = "count",
+            aes(label = paste0(after_stat(count), "\n(",
+                               round(after_stat(count) / 1000 * 100, 1), "%)")),
+            vjust = 1.5, color = "white", fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("No_default" = "#2196F3", "Default" = "#E53935")) +
+  labs(title = "Distribución de la variable target",
+       x = NULL, y = "Número de clientes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+Esto nos demuestra que el dataset está desbalanceado, el 70% de los
+casos corresponden a clientes "No default", frente al 30% de "default".
+Un modelo de clasificación sencillo que siempre predijera "No default"
+alcanzaría ya un 70% de accuracy sin aprender nada. Como se comenta al
+incio del documento, esta métrica por sí sola no será suficiente para
+evaluar el modelo.
+
+**Distribución variables numéricas**
+
+```{r message=FALSE, warning=FALSE}
+# Estadísticos
+summary(credit[, c("months_loan_duration", "amount", "age")])
+
+# Graficamos
+p_duration <- ggplot(credit, aes(x = months_loan_duration)) +
+  geom_histogram(bins = 30, fill = "#2196F3", color = "white") +
+  labs(title = "Duración del préstamo",
+       x = "Meses", y = "Frecuencia") +
+  theme_minimal()
+
+p_amount <- ggplot(credit, aes(x = amount)) +
+  geom_histogram(bins = 30, fill = "#2196F3", color = "white") +
+  labs(title = "Importe del crédito",
+       x = "DM", y = "Frecuencia") +
+  theme_minimal()
+
+p_age <- ggplot(credit, aes(x = age)) +
+  geom_histogram(bins = 30, fill = "#2196F3", color = "white") +
+  labs(title = "Edad del solicitante",
+       x = "Años", y = "Frecuencia") +
+  theme_minimal()
+
+grid.arrange(p_duration, p_amount, p_age, ncol = 3)
+```
+
+Las tres variables numéricas continuas nos muestran patrones de
+distribución con asimetría positiva, es decir, con cola hacia la
+derecha, indicando que la mayoría de los clientes se concentran en
+valores bajos.
+
+-   **`months_loan_duration`:** La mayoría de préstamos tienen una
+    duración de entre 12 y 24 meses, con picos claros en estos valores.
+    Los préstamos con más de 48 meses de duración son minoritarios. Por
+    lo que la distribución nos sugiere que los préstamos se conceden
+    principalmente a corto-medio plazo.
+
+-   **`amount`:** Existe una fuerte concentración por debajo de los
+    5.000 DM, con una cola larga hacia importes más elevados. El importe
+    mediano es de 2.320 DM frente a una media de 3.271, diferencia que
+    ya refleja la asimetría de la distribución. Se ve una presencia de
+    outliers, ya que se ven casos aislados por encima de 15.000 DM.
+
+-   **`age`:** Hay un pico alrededor de los 25-30 años, decayendo
+    progresivamente hacia edades mayores. La mayoría de los solicitantes
+    son adultos jóvenes, con muy pocos casos por encima de los 60 años.
+    La mediana es de 33 años y la media de 35,5 años.
+
+**Distribución univariante - variables categóricas**
+
+Primero veremos un conteo de los distintos niveles de cada variable.
+Después graficaremos las distribuciones. Para ello, dado que son 13
+variables, haremos 4 grids. Primero uno con las variables que tienen
+menos niveles, a continuación el resto, luego las dos variables con más
+niveles por separado para visualizarlas mejor y finalmente las 4
+variables numéricas convertidas a factor:
+
+```{r message=FALSE, warning=FALSE}
+# Conteos por nivel
+summary(credit[, sapply(credit, is.factor)])
+
+# Grid 1: variables con pocos niveles
+p_checking <- ggplot(credit, aes(x = checking_balance)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "checking_balance", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_history <- ggplot(credit, aes(x = credit_history)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "credit_history", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_savings <- ggplot(credit, aes(x = savings_balance)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "savings_balance", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_employment <- ggplot(credit, aes(x = employment_length)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "employment_length", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_housing <- ggplot(credit, aes(x = housing)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "housing", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+p_job <- ggplot(credit, aes(x = job)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "job", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+grid.arrange(p_checking, p_history, p_savings,
+             p_employment, p_housing, p_job,
+             ncol = 3)
+
+# Grid 2: resto de variables
+p_status <- ggplot(credit, aes(x = personal_status)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "personal_status", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_debtors <- ggplot(credit, aes(x = other_debtors)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "other_debtors", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+p_plan <- ggplot(credit, aes(x = installment_plan)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "installment_plan", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+p_foreign <- ggplot(credit, aes(x = foreign_worker)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "foreign_worker", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+p_telephone <- ggplot(credit, aes(x = telephone)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "telephone", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+grid.arrange(p_status, p_debtors, p_plan, p_foreign, p_telephone, ncol = 3)
+
+# Grid 3: purpose y property:
+p_property <- ggplot(credit, aes(x = property)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "property", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+p_purpose <- ggplot(credit, aes(x = purpose)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "purpose", x = NULL, y = "Frecuencia") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+grid.arrange(p_purpose, p_property, ncol=2)
+
+# Grid 4: Variables numéricas convertidas a factor
+p_inst_rate <- ggplot(credit, aes(x = installment_rate)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "installment_rate", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+p_residence <- ggplot(credit, aes(x = residence_history)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "residence_history", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+p_credits <- ggplot(credit, aes(x = existing_credits)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "existing_credits", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+p_dependents <- ggplot(credit, aes(x = dependents)) +
+  geom_bar(fill = "#2196F3") +
+  labs(title = "dependents", x = NULL, y = "Frecuencia") +
+  theme_minimal()
+
+grid.arrange(p_inst_rate, p_residence, p_credits, p_dependents, ncol = 2)
+
+```
+
+-   **`checking_balance`:** La categoría más frecuente es `unknown` (394
+    clientes, 39.4%), que en el contexto del dataset indica ausencia de
+    cuenta corriente. Le siguen 274 clientes con menos de 0 DM y 269
+    personas con un saldo de entre 1 y 200 DM. Solo 63 clientes poseen
+    un saldo superior a 200 DM.
+
+-   **`credit_history`:** El 53% de los clientes tiene créditos
+    previamente repaid. Destaca que 293 clientes tienen un historial
+    clasificado como crítico, lo que sugiere que el banco concede
+    créditos incluso a perfiles con historial problemático.
+
+-   **`savings_balance`:** 603 casos tienen menos de 100 DM, es decir,
+    la mayoría de los solicitantes tienen escasos ahorros, lo que es
+    relevante como predictor de riesgo.
+
+-   **`employment_length`:** predominan los empleados con antigüedad de
+    entre 1 y 4 años (339) y con más de 7 años (253). Los desempleados
+    son minoría (62 casos).
+
+-   **`housing`:** La mayoría de los clientes vive en una vivienda
+    propia, el 71.3%.
+
+-   **`job`:** Dominan los 'skilled employee', siendo un 63%. Los
+    `unemployed non-resident` son solo 22 casos, categoría muy
+    minoritaria.
+
+-   **`personal_status`:** Predominan los hombres solteros con un 54.8%,
+    seguidos de las mujeres con un 31%. La variable combina sexo y
+    estado civil, lo que limita su interpretabilidad.
+
+-   **`other_debtors`:** El 90.7% de los clientes no tiene avalistas ni
+    co-solicitantes. Nos encontramos ante una variable muy
+    desbalanceadam con escasa variabilidad.
+
+-   **`installment_plan`:** El 81.4% de los clientes no tiene otros
+    planes de pago activos (`none`).
+
+-   **`foreign_worker`:** Existe un aplastante 96.3% de clientes que son
+    trabajadores extranjeros. Esta variable tiene muy poca variabilidad
+    y probablemente no aporte mucho al modelo.
+
+-   **`telephone`:** El 59.6% no tiene teléfono registrado a nombre del
+    cliente.
+
+-   **`property`:** Distribución bastante equilibrada entre `other`
+    (332), `real state` (282) y `building society savings` (232). Solo
+    154 clientes no tienen ninguna propiedad registrada.
+
+-   **`purpose`:** El motivo más frecuente es `radio/tv` con 280 casos,
+    seguido de coche nuevo con 234 y muebles con 181. Los préstamos para
+    `retraining` y `domestic appliances` se pueden catalogar como
+    "anecdóticos".
+
+-   **`installment_rate`:** Casi la mitad de los clientes (47.6%)
+    destina el mayor porcentaje de su renta disponible al pago de la
+    cuota del préstamo. Los niveles 1 y 3 son los menos frecuentes.
+
+-   **`residence_history`:** Los niveles 2 y 4 (308 y 413
+    respectivamente), indican que los clientes tienden a llevar entre 1
+    y 4 años o más de 7 años en su residencia actual. El nivel 1 es el
+    menos frecuente con 130 casos.
+
+-   **`existing_credits`:** La mayoría de los solicitantes tiene un
+    único activo en el banco, el 63,3%. Tener 3 o más créditos es muy
+    poco frecuente (34 casos en total), lo que convierte esta variable
+    en poco discriminante para valores altos.
+
+-   **`dependents`:** El 84,5% de los clientes tiene solo 1 persona a
+    cargo. Con apenas 155 casos en el nivel 2, esta variable presenta
+    muy poca variabilidad y probablemente aportará escasa capacidad
+    predictiva al modelo.
+
+### Análisis Bivariante
+
+Una vez estudiada la distribución individual de cada variable,
+analizamos su relación con la variable target `default`. El objetivo es
+identificar qué variables pueden presentar diferencias claras entre
+clientes con y sin impago, para obtener una primera intuición sobre su
+capacidad predictiva antes de construir el modelo.
+
+**Variables numéricas vs `default`**
+
+Para las variables numéricas continuas utilizamos boxplots, que nos
+permitirán comparar la distribución de cada variable entre los dos
+grupos (Default vs No default) y detectar la presencia de valores
+atípicos. Ante la presencia de estos, habrá que tomar una decisión
+justificada sobre si imputarlos, eliminarlos o mantenerlos.
+
+```{r message=FALSE, warning=FALSE}
+
+# months_loan_duration
+p_box_duration <- ggplot(credit, aes(x = default, y = months_loan_duration, fill = default)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("No_default" = "#2196F3", "Default" = "#E53935")) +
+  labs(title = "Duración del préstamo vs Default",
+       x = NULL, y = "Meses") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# amount
+p_box_amount <- ggplot(credit, aes(x = default, y = amount, fill = default)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("No_default" = "#2196F3", "Default" = "#E53935")) +
+  labs(title = "Importe del crédito vs Default",
+       x = NULL, y = "DM") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# age
+p_box_age <- ggplot(credit, aes(x = default, y = age, fill = default)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("No_default" = "#2196F3", "Default" = "#E53935")) +
+  labs(title = "Edad vs Default",
+       x = NULL, y = "Años") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+grid.arrange(p_box_duration, p_box_amount, p_box_age, ncol = 3)
+
+```
+
+Visualizamos los valores concretos extremos:
+
+```{r message=FALSE, warning=FALSE}
+boxplot.stats(credit$months_loan_duration)$out
+
+boxplot.stats(credit$amount)$out
+
+boxplot.stats(credit$age)$out
+
+```
+
+Los boxplots revelan la presencia de outliers en las tres variables
+numéricas. Teniendo en cuenta el contexto del dominio bancario, se trata
+de valores plausibles y reales: importes elevados, préstamos a largo
+plazo y clientes de edad avanzada son perfectamente posibles en este
+contexto. No se detectan errores evidentes de entrada de datos ni
+valores imposibles, por lo que se decide mantener todos los datos sin
+imputación alguna.\
+Adicionalmente, los boxplots muestran diferencias relevantes entre
+grupos. Los clientes con Default tienden a solicitar préstamos de mayor
+importe y mayor duración que los clientes sin Default, sin embargo, la
+edad no muestra una separación tan clara entre los grupos.
+
+**Variables numéricas vs `default`**
+
+```{r message=FALSE, warning=FALSE}
+# Función auxiliar para no repetir código
+plot_biv <- function(var, titulo) {
+  ggplot(credit, aes(x = .data[[var]], fill = default)) +
+    geom_bar(position = "fill") +
+    scale_fill_manual(values = c("No_default" = "#2196F3", "Default" = "#E53935")) +
+    scale_y_continuous(labels = scales::percent) +
+    labs(title = titulo, x = NULL, y = NULL, fill = NULL) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          legend.position = "none")
+}
+
+# Grid 1
+grid.arrange(
+  plot_biv("checking_balance", "checking_balance"),
+  plot_biv("credit_history", "credit_history"),
+  plot_biv("savings_balance", "savings_balance"),
+  plot_biv("employment_length", "employment_length"),
+  plot_biv("housing", "housing"),
+  plot_biv("job", "job"),
+  ncol = 3
+)
+
+# Grid 2
+grid.arrange(
+  plot_biv("personal_status", "personal_status"),
+  plot_biv("other_debtors", "other_debtors"),
+  plot_biv("installment_plan", "installment_plan"),
+  plot_biv("foreign_worker",  "foreign_worker"),
+  plot_biv("telephone", "telephone"),
+  plot_biv("property", "property"),
+  ncol = 3
+)
+
+# Grid 3
+grid.arrange(
+  plot_biv("purpose", "purpose"),
+  plot_biv("installment_rate", "installment_rate"),
+  plot_biv("residence_history", "residence_history"),
+  plot_biv("existing_credits", "existing_credits"),
+  plot_biv("dependents", "dependents"),
+  ncol = 3
+)
+```
+
+Tras estos resultados podemos sacar las siguientes conclusiones de cada
+variable:
+
+-   **`checking_balance`**: variable muy discriminante. Los clientes con
+    saldo negativo (`< 0 DM`) presentan la tasa de default más alta
+    (\~50%), mientras que los clientes sin cuenta corriente (`unknown`)
+    tienen la tasa más baja (\~15%). A mayor saldo, menor riesgo de
+    impago.
+
+-   **`credit_history`**: clara separación entre categorías. Los
+    historiales `fully repaid` y `fully repaid this bank` presentan
+    tasas de default elevadas (\~40-50%), lo que resulta contraintuitivo
+    a primera vista. Sin embargo, puede explicarse porque estos clientes
+    son nuevos en el banco y tienen menos historial acumulado. El
+    historial `critical` muestra una tasa moderada (\~22%),
+    probablemente porque el banco ya les aplica condiciones más
+    restrictivas.
+
+-   **`savings_balance`**: a mayor ahorro, menor tasa de default. Los
+    clientes con menos de 100 DM en ahorros tienen la tasa más alta
+    (\~35%), mientras que los que tienen más de 1.000 DM presentan la
+    más baja (\~15%). Variable con clara capacidad discriminante.
+
+-   **`employment_length`**: los desempleados (`unemployed`) tienen la
+    tasa de default más alta (\~35%). Los empleados con más de 7 años de
+    antigüedad presentan la tasa más baja (\~25%). La separación es
+    moderada.
+
+-   **`housing`**: los clientes que viven de alquiler (`rent`) presentan
+    mayor tasa de default que los propietarios (`own`). Los que viven
+    gratis (`for free`) muestran una tasa intermedia-alta.
+
+-   **`job`**: diferencias moderadas entre categorías. Los
+    `unskilled resident` presentan mayor tasa de default que los
+    `skilled employee`. Los `unemployed non-resident` tienen pocos casos
+    y poca fiabilidad estadística.
+
+-   **`personal_status`**: las mujeres presentan una tasa de default
+    ligeramente superior a los hombres solteros. Los hombres divorciados
+    muestran la tasa más alta. Diferencias moderadas entre categorías.
+
+-   **`other_debtors`**: los co-solicitantes (`co-applicant`) presentan
+    la tasa de default más alta (\~40%), mientras que tener un avalista
+    (`guarantor`) la reduce considerablemente (\~25%). Sin embargo, dado
+    el fuerte desbalance de esta variable (90% `none`), los resultados
+    de las categorías minoritarias deben interpretarse con cautela.
+
+-   **`installment_plan`**: los clientes con plan de pago en tiendas
+    (`stores`) presentan mayor tasa de default. Diferencias moderadas.
+    Variable poco discriminante dado su desbalance.
+
+-   **`foreign_worker`**: la tasa de default entre trabajadores
+    extranjeros (\~31%) es muy superior a la de no extranjeros (\~8%).
+    Sin embargo, con solo 37 casos en la categoría `no`, este resultado
+    no es estadísticamente robusto.
+
+-   **`telephone`**: los clientes sin teléfono registrado presentan
+    mayor tasa de default que los que sí tienen. Diferencia moderada,
+    variable con capacidad predictiva limitada.
+
+-   **`property`**: los clientes sin propiedades (`unknown/none`)
+    presentan la tasa de default más alta (\~45%), mientras que los
+    propietarios de inmuebles (`real estate`) tienen la más baja
+    (\~25%). Variable moderadamente discriminante.
+
+-   **`purpose`**: destacan `education` y `retraining` con tasas de
+    default elevadas, aunque con pocos casos. Entre los propósitos
+    frecuentes, `car (new)` presenta mayor riesgo que `car (used)` o
+    `radio/tv`.
+
+-   **`installment_rate`**: a mayor porcentaje de renta destinado a la
+    cuota, mayor tasa de default. El nivel 4 (el más alto) presenta la
+    tasa de default más elevada. Variable con tendencia clara y
+    capacidad discriminante moderada.
+
+-   **`residence_history`**: diferencias pequeñas entre niveles. Los
+    clientes con menos tiempo en su residencia (nivel 1) presentan
+    ligeramente mayor tasa de default. Variable poco discriminante.
+
+-   **`existing_credits`**: el nivel 3 presenta la tasa de default más
+    baja, aunque con pocos casos. En general las diferencias son
+    pequeñas y la variable parece poco discriminante.
+
+-   **`dependents`**: diferencias mínimas entre tener 1 o 2 personas a
+    cargo. Variable prácticamente no discriminante para predecir el
+    default.
+
+### Tests estadísticos de asociación
+
+Para poder cuantificar de una forma objetiva la relación entre cada
+variable predictora y el target, aplicamos tests estadísticos de
+asociación. Esto nos permite ir más allá de una simple inspección visual
+y así poder obtener un ranking comparable entre todas las variables.
+
+Para las variables categóricas se utilizará la **V de Cramér**, una
+medida de asociación basada en el estadístico chi-cuadrado que toma
+valores entre 0 y 1, indicando "Sin asociación" y "Asociación perfecta"
+respectivamente. Como referencia orientativa: - $V < 0.1 \rightarrow$
+Asociación débil - $0.1 \le V < 0.3 \rightarrow$ Asociación
+débil-moderada - $0.3 \le V < 0.5 \rightarrow$ Asociación moderada -
+$0.1 \ge 0.5 \rightarrow$ Asociación fuerte
+
+Para las variables numéricas se utilizará el **Test de Wilcoxon**
+(Mann-Whitney), una alternativa no paramétrica al t-test más robusta
+ante distribuciones asimétricas como las que hemos podido observar. Un
+$p-valor < 0.05$ indica que las diferencias entre el grupo Default y No
+Default son estadísticamente significativas.
+
+```{r message=FALSE, warning=FALSE}
+library(DescTools)
+
+# V de Cramér para todas las categóricas vs default
+vars_cat <- c("checking_balance", "credit_history", "purpose",
+              "savings_balance", "employment_length", "personal_status",
+              "other_debtors", "property", "installment_plan", "housing",
+              "telephone", "foreign_worker", "job", "installment_rate",
+              "residence_history", "existing_credits", "dependents")
+
+cramer_results <- data.frame(
+  Variable   = vars_cat,
+  CramerV    = sapply(vars_cat, function(v) {
+    CramerV(table(credit[[v]], credit$default))
+  })
+) %>%
+  arrange(desc(CramerV))
+
+print(cramer_results)
+
+# Wilcoxon para las numéricas vs default
+wilcox_amount   <- wilcox.test(amount   ~ default, data = credit)
+wilcox_duration <- wilcox.test(months_loan_duration ~ default, data = credit)
+wilcox_age      <- wilcox.test(age ~ default, data = credit)
+
+data.frame(
+  Variable  = c("amount", "months_loan_duration", "age"),
+  p_valor   = c(wilcox_amount$p.value,
+                wilcox_duration$p.value,
+                wilcox_age$p.value)
+)
+```
+
+Los resultados confirman y matizan lo observado visualmente:
+
+-   **`checking_balance`** es con diferencia la variable categórica más
+    asociada al target, seguida de **`credit_history`** y
+    **`saving_balance`** con asociaciones débil-moderadas. En el extremo
+    opuesto, `dependents` presenta una asociación prácticamente nula,
+    confirmando lo que ya se veía en los gráficos.
+
+-   En cuanto a las variables numéricas, las tres muestran diferencias
+    estadísticamente significativas entre clientes con y sin default. La
+    más relevante de las tres con un p-valor extremadamente pequeño es
+    `months_loan_duration`. Los préstamos de mayor duración se asocian
+    con mayor riesgo de default.
+
+### Correlación entre variables numéricas
+
+Los tests de Wilcoxon anteriores analizaban la relación de cada variable
+numérica con el target de forma individual. Ahora estudiaremos si existe
+relación entre las propias variables predictoras numéricas, es decir, si
+existe multicolinealidad. Recordemos que dos variables muy
+correlacionadas entre sí al aportar información redundante, pueden
+distorsionar la interpretación del modelo.
+
+Dada la distribución asimétrica de las variables, utilizamos la
+correlación Spearman en lugar de la de Pearson. Spearman mide la
+correlación entre los rangos de los valores, siendo más robusta ante la
+falta de normalidad y la presencia de outliers.
+
+```{r message=FALSE, warning=FALSE}
+# Matriz de correlación
+cor_matrix <- cor(credit[, c("months_loan_duration", "amount", "age")],
+                  method = "spearman")  # Spearman por las distribuciones asimétricas
+print(round(cor_matrix, 3))
+
+# Visualización
+library(corrplot)
+corrplot(cor_matrix, method = "color", type = "upper",
+         addCoef.col = "black", tl.col = "black")
+```
+
+Tras ver esta matriz de correlación de Spearman, se puede concluir que
+no existe una multicolinealidad problemática entre las variables
+numéricas. En todo caso, la única correlación destacable es entre
+`months_loan_duration` y `amount`, con una correlación positiva de 0.62,
+indicando que los préstamos de mayor importe tienden a concederse a
+plazos más largos. Esta correlación no es lo suficientemente alta como
+para considerar eliminar una de las dos variables, ya que ambas aportan
+información propia al modelo.
+
+### Tablas de contingencia
+
+A partir del ranking obtenido en los tests estadísticos, profundizamos
+en las variables con mayor capacidad discriminante mediante tablas de
+contingencia. Estas tablas muestran la distribución conjunta de cada
+variable con `default`, permitiendo identificar qué categorías concretas
+concentra mayor riesgo de impago. Se analizan únicamente las variables
+con V de Cramér más elevada, ya que son las que aportarán mayor valor
+predictivo al modelo: `checking_balance`, `credit_history`,
+`savings_balance` y `purpose`.
+
+```{r message=FALSE, warning=FALSE}
+# Tablas de contingencia con proporciones por fila
+vars_top4 <- c("checking_balance", "credit_history",
+               "savings_balance", "purpose")
+
+for (v in vars_top4) {
+  cat("\n====", v, "====\n")
+  t <- table(credit[[v]], credit$default)
+  print(t)
+  cat("\nProporciones por fila:\n")
+  print(round(prop.table(t, margin = 1) * 100, 1))
+}
+```
+
+-   **`checking_balance`:** A mayor saldo en la cuenta menor riesgo de
+    impago. Los clientes con saldo negativo presentan la tasa de default
+    más alta de todas las categorías de esa variable, un 49,3%, una
+    proporción casi equiparable a la de no impago (50,7%). En el extremo
+    opuesto, los clientes sin cuenta correinte tienen la tasa de impago
+    más baja con solo un 11,7%. Los clientes con saldo entre 1 y 200 DM
+    presentan un riesgo intermedio (39,0%), mientras que los que superan
+    los 200DM se sitúan en el 22,2%.
+
+-   **`credit_history`:** Los clientes con un historial de
+    `fully repaid`y `fully repaid this bank` presentan las tasas de
+    impago más altas, superando incluso a los clientes con historial de
+    `delayed` (31,8%). Estos datos son contraintuitivos, pero pueden
+    significar que el banco relaje los requisitos para concederles
+    créditos a estos perfiles y esto esté acabando en un escenario no
+    deseado. Por otro lado, los clientes con historial "crítico"
+    registran menos impagos (17.1%), esto puede ser debido a que el
+    banco solo apruebe créditos a los mejores de ese grupo bajo filtros
+    altamente estrictos.
+
+-   **`savings_balance`:** A mayor ahorro, menor tasa de impago. Los
+    clientes con menos de 100 DM en ahorros presentan la tasa más alta
+    (36%), mientras que los que tienen más de 1.000 DM presentan la más
+    baja (12,5%). Destaca que los clientes sin cuenta de ahorros tienen
+    una tasa de solo el 17,5% similar a los ahorradores de nivel
+    medio-alto, lo que está sugiriendo una ausencia de necesidad de
+    cuenta de ahorros más que ausencia de capacidad de ahorro.
+
+-   **`purpose`:** La finalidad del préstamo muestra diferencias
+    relevantes entre categorías. Los préstamos para `education`
+    presentan la tasa de default más alta entre los propósitos
+    frecuentes (44.0%), seguidos de `car (new)` (38.0%) y `business`
+    (35.1%). En el extremo opuesto, `car (used)` (16.5%) y `radio/tv`
+    (22.1%) presentan las tasas más bajas. Una interpretación posible es
+    que los coches usados implican importes menores y plazos más cortos,
+    mientras que la educación supone una inversión a largo plazo con
+    retorno incierto. Los propósitos con muy pocos casos (`retraining`,
+    `domestic appliances`, `others`) deben interpretarse con cautela por
+    su escasa representatividad estadística.
+
+### Conclusiones - Ranking de relevancia
+
+Tras el análisis descriptivo, bivariante y los tests estadísticos,
+podemos establecer las siguientes conclusiones antes de abordar el
+modelado:
+
+**Variables más relevantes** (V de Cramér \> 0.15 o Wilcoxon
+significativo):
+
+-   `checking_balance` es la variable más discriminante del dataset
+    (V=0.352). El saldo negativo en cuenta corriente es el indicador más
+    claro de riesgo de impago.
+-   `credit_history` (V=0.248) y `savings_balance` (V=0.190) completan
+    el top 3 de variables categóricas, confirmando que la situación
+    financiera actual del cliente es más predictiva que su perfil
+    sociodemográfico.
+-   `months_loan_duration` es la variable numérica más relevante
+    (p=7.98e-11), seguida de `age` y `amount`.
+
+**Variables de escasa utilidad predictiva:**
+
+-   `dependents` (V=0.003), `residence_history` (V=0.027) y `telephone`
+    (V=0.036) presentan asociaciones prácticamente nulas con el target.
+-   `foreign_worker` y `other_debtors`, pese a mostrar diferencias
+    visuales, tienen asociaciones débiles distorsionadas por el fuerte
+    desbalance de sus categorías.
+
+**Consideraciones para el modelado:**
+
+-   El dataset está **desbalanceado** (70/30), por lo que el accuracy no
+    será la métrica principal de evaluación.
+-   No existe multicolinealidad problemática entre las variables
+    numéricas.
+-   Se incluirán **todas las variables** en el modelo inicial, dejando
+    que el propio algoritmo C5.0 seleccione las más relevantes mediante
+    su mecanismo interno de poda.
+
+**Matriz de costes asimétrica:**
+
+Según la documentación original del dataset en el repositorio UCI
+Machine Learning Repository, el problema requiere el uso de una matriz
+de costes asimétrica:
+
+|                    | Predicho: Good (1) | Predicho: Bad (2) |
+|--------------------|--------------------|-------------------|
+| **Real: Good (1)** | 0                  | 1                 |
+| **Real: Bad (2)**  | 5                  | 0                 |
+
+Clasificar un cliente malo como bueno (falso negativo) tiene un coste de
+**5**, cinco veces superior al coste de clasificar un cliente bueno como
+malo (falso positivo, coste **1**). Esto refuerza la necesidad de
+priorizar el **Recall sobre la clase Default** frente al accuracy global
+en todos los modelos que construiremos a continuación.
+
+------------------------------------------------------------------------
+
+## Árbol de decisión
+
+Antes de construir el modelo, es necesario dividir el dataset en dos
+subconjuntos: uno de entrenamiento, con el que el algoritmo aprenderá
+los patrones, y uno de pruebas, que reservamos para evaluar la capacidad
+predictiva del modelo sobre datos no vistos.
+
+Siguiendo el enfoque del ejemplo, se utilizará una proporción 2/3 - 1/3.
+Además, se fija una semilla para garantizar la reproducibilidad del
+análisis (`set.seed(20252`)).
+
+Se elige el algoritmo **C5.0** frente a otras implementaciones de
+árboles como CART o rpart por su manejo nativo de variables categóricas
+sin necesidad de codifiación previa, su mecanismo de poda automática
+basado en el criterio de confianza de Quinlan, y por su capacidad para
+generar tanto árboles como reglas interpretables directamente.
+
+```{r message=FALSE, warning=FALSE}
+# Fijamos semilla 
+set.seed(20252)
+
+# Separamos target y variables predictoras
+y <- credit$default
+x <- credit[, names(credit) != "default"]
+
+# Split 2/3
+split_prop <- 3
+indexes <- sample(1:nrow(credit), size = floor(((split_prop - 1) / split_prop) * nrow(credit)))
+
+trainX<-x[indexes,]
+trainy<-y[indexes]
+testX<-x[-indexes,]
+testy<-y[-indexes]
+
+# Verificamos dimensiones
+dim(trainX)
+dim(testX)
+
+# Verificamos proporciones
+prop.table(table(trainy))
+prop.table(table(testy))
+```
+
+El dataset se divide en 666 casos para entrenamiento (2/3) y 334 para
+test (1/3). Además, después de ejecutar la extracción aleatoria, hemos
+verificado que la distribución de la variable objetivo se mantiene
+estable en ambos subconjuntos:
+
+-   **Train**: 70.3% No_default / 29.7% Default (468 / 198 casos)
+-   **Test**: 69.5% No_default / 30.5% Default (232 / 102 casos)
+
+No se observan diferencias graves entre los subconjuntos que pudieran
+sesgar las conclusiones. Las distribuciones de todas las variables
+predictoras son consistentes entre train y test, confirmando que la
+partición aleatoria ha sido representativa.
+
+```{r message=FALSE, warning=FALSE}
+# Verificamos que trainy es factor ya que C5.0 requiere que la variable target sea factor
+class (trainy)
+levels(trainy)
+```
+
+Con los datos de entrenamiento preparados, construimos el primer árbol
+de decisión utilizando el algoritmo **C5.0**, una implementación moderna
+del algoritmo ID3 de Quinlan que incorpora poda automática (con un
+criterio de confianza, CF, por defecto de 0.25) y manejo nativo de
+variables categóricas.
+
+Se incluyen todas las variables predictoras en este primer modelo,
+dejando que el propio algoritmo seleccione las más informativas mediante
+su mecanismo interno de ganancia de información.
+
+```{r message=FALSE, warning=FALSE}
+# Creamos el árbol sin reglas
+model_tree <- C5.0(trainX, trainy)
+summary(model_tree)
+
+```
+
+El árbol C5.0 entrenado con los datos de entrenamiento (666 casos) ha
+generado un árbol de 24 nodos hoja con una tasa de error del 16,5%, lo
+que equivale a un accuracy en train del 83,5%.
+
+**Estructura del árbol**
+
+La variable raíz es `checking_balance`, que divide inmediatamente el
+árbol en dos grandes ramas:
+
+-   Clientes con saldo superior a 200 DM o `unknown` (313 casos): que se
+    clasifican directamente como No_default con una tasa de error del
+    12,8% (40/313). Esta rama cubre el 47% del train con una única
+    condición, lo que confirma que `checking_balance` es la variable más
+    discriminante del dataset.
+-   Clientes con saldo inferior a 0 DM o entre 1 y 200 DM: El árbol
+    profundiza usando las variables `foreign_worker`, `other_debtors`,
+    `credit_history`, `months_loan_duration`, `amount`, `job`,
+    `savings_balance` y `property` para refinar la clasificación.
+
+**Variables selecionadas por el modelo**
+
+El algoritmo ha seleccionado 12 de las 20 variables disponibles. Las más
+relevante por frecuencia de uso son `checking_balance` (100%),
+`foreign_worker` (53%), `other_debtors` (51.2%) y `credit_history`
+(45.05%). Las variables `age`, `purpose`, `installment_rate`,
+`residence_history`, `dependents`, `telephone`, `employment_length` y
+`personal_status` han sido completamente ignoradas por el algoritmo, lo
+que es consistente con las bajas asociaciones observadas en el análisis
+exploratorio.
+
+**Matriz de confusión**
+
+De los 110 errores cometidos en el entrenamiento, 41 son falsos
+positivos (clientes pagadores clasificados como Default) y **69 falsos
+negativos** (clientes que no pagan clasificados como pagadores).
+Aplicando la matriz de costes asimétrica (FN=5, FP=1), estos 69 casos
+representan el error más costoso para el negocio.
+
+Procedemos a visualizar el árbol:
+
+```{r fig.width=20, fig.height=12}
+
+library(partykit)
+plot(as.party(model_tree), gp = gpar(fontsize = 10))
+```
+
+La visualización del árbol confirma la estructura descrita
+anteriormente. La variable raíz es `checking_balance`, que divide el
+árbol en dos ramas principales:
+
+-   **Rama izquierda** (saldo `> 200 DM` o `unknown`): clasificación
+    directa como No_default sin necesidad de evaluar más variables.
+
+-   **Rama derecha** (saldo `< 0 DM` o `1 - 200 DM`): el árbol
+    profundiza sucesivamente en `foreign_worker`, `other_debtors`,
+    `credit_history`, `months_loan_duration`, `savings_balance`,
+    `amount`, `job`, `property` y `housing`, refinando la clasificación
+    según el perfil del cliente.
+
+Cada nodo hoja muestra la distribución de probabilidad entre No_default
+y Default, permitiendo identificar visualmente los perfiles de mayor
+riesgo en las hojas con mayor proporción de Impago.
+
+------------------------------------------------------------------------
+
+## Reglas del árbol de decisión
+
+El algoritmo C5.0 permite extraer el conocimiento aprendido en forma de
+**reglas de decisión** en lugar de una estructura de árbol. Cada regla
+es una condición independiente del tipo "Si... Entonces..." que asigna
+un caso a una clase con una confianza determinada.
+
+Cada regla tiene 3 elementos:
+
+-   **Soporte:** nº de casos del train que cumplen las condiciones de la
+    regla.
+-   **Confianza:** proporción de esos casos que pertenecen realmente a
+    la clase predicha.
+-   **Lift:** La cantidad de veces que aumenta la probabilidad de
+    acertar la clase predicha en comparación con el promedio general de
+    los datos. Por ejemplo, un lift de 2.0 significa que la regla es el
+    doble de precisa que predecir siempre la clase mayoritaria.
+
+```{r}
+# Modelo con extracción de reglas de decisión
+model_rules<- C50::C5.0(trainX, trainy,rules=TRUE )
+summary(model_rules)
+
+# Importancia de variables según C5.0 (% de casos en que interviene cada variable)
+C5imp(model_rules, metric = "usage")
+```
+
+El modelo ha generado 11 reglas con una tasa de error de entrenamiento
+del 16,8% (112 casos mal clasificados de los 666).\
+De las 11 reglas, las 2 primeras clasifican como No_default y las 9
+restantes identifican perfiles de Default:
+
+**Interpretación en lenguaje de negocio:**
+
+-   **Regla 1** (22 casos, confianza 91.7%): Los clientes no extranjeros
+    son buenos pagadores con alta probabilidad.
+-   **Regla 2** (644 casos, confianza 69.3%): Los clientes extranjeros
+    tienden a ser buenos pagadores, aunque con una confianza apenas
+    superior a la proporción base del dataset. Regla por defecto del
+    modelo.
+-   **Regla 3** (6 casos, confianza 87.5%): Un cliente con saldo bajo,
+    sin activos relevantes y con empleo no cualificado tiene un 87.5% de
+    probabilidad de impago.
+-   **Regla 4** (12 casos, confianza 85.7%): Un cliente con saldo bajo
+    que solicita un importe elevado (\>9.277 DM) con historial no
+    excelente tiene un 85.7% de probabilidad de impago.
+-   **Regla 5** (4 casos, confianza 83.3%): Un hombre soltero con saldo
+    bajo que solicita crédito con co-solicitante, aun teniendo empleo
+    cualificado, tiene un 83.3% de probabilidad de impago.
+-   **Regla 6** (4 casos, confianza 83.3%): Una mujer trabajadora
+    extranjera con saldo bajo que solicita crédito con co-solicitante
+    tiene un 83.3% de probabilidad de impago.
+-   **Regla 7** (3 casos, confianza 80%): Un cliente con saldo bajo que
+    necesita avalista para un préstamo de más de 21 meses tiene un 80%
+    de probabilidad de impago.
+-   **Regla 8** (38 casos, confianza 75%): Un cliente con saldo bajo que
+    ha saldado todos sus créditos anteriores y no tiene avalista tiene
+    un 75% de probabilidad de impago.
+-   **Regla 9** (82 casos, confianza 71.4%): Un cliente extranjero con
+    saldo negativo, pocos ahorros, sin avalista y con préstamo de más de
+    11 meses tiene un 71.4% de probabilidad de impago. **Perfil de
+    riesgo más frecuente del dataset.**
+-   **Regla 10** (21 casos, confianza 60.9%): Un autónomo o directivo
+    con vivienda propia pero saldo bajo tiene un 60.9% de probabilidad
+    de impago.
+-   **Regla 11** (74 casos, confianza 59.2%): Un cliente con saldo bajo
+    o negativo que solicita un préstamo de más de 28 meses sin avalista
+    tiene un 59.2% de probabilidad de impago.
+
+**Cobertura de las reglas** Las reglas 1 y 2 cubren conjuntamente el
+100% de los casos usando `foreign_worker`. Esto explica por qué esta
+variable aparece son un uso del 100% en el Attribute usage, aunque como
+ya vimos en el análisis exploratorio su V de Cramér era baja (0.082). No
+es que sea muy discriminante, sino que actúa como regla por defecto del
+modelo.
+
+Entre las reglas de Default, la regla 9 es la de mayor alcance con 82
+casos y una confianza del 71,4%, seguida de la regla 11 con 74 casos y
+una confianza del 59,2%. En el extremo opuesto, las reglas 5, 6 y 7
+cubren a penas 3-4 casos cada una, ya que son reglas muy precisas pero
+de escaso impacto práctico.
+
+**Patrones más interesantes**
+
+-   `checking_balance` aparece en 9 de las 11 reglas, confirmando su
+    papel central como predictor de riesgo, en línea con lo visto en el
+    EDA.
+-   Las reglas 8 y 9 confirman el patrón contraintuitivo detectado
+    anteriormente: cientes con historial `fully repaid` presentan alta
+    tasa de impago (75% de confianza, 38 casos).
+-   Las reglas 9 y 11 apuntan al mismo patrón de fondo: el saldo bajo o
+    negativo combinado con préstamos a medio-largo plazo es el principal
+    indicador de riesgo, independientemente de otras características del
+    cliente.
+-   Las reglas con mayor lift (2,9) son las reglas 3 y 4, es decir,
+    predicen el impago casi 3 veces mejor que el azar, aunque con muy
+    pocos casos (6 y 12 respectivamente).
+-   El modelo ha ignorado completamente variables como `age`, `purpose`,
+    `installment_rate`, `residence_history` o `dependents`, también en
+    línea con las bajas asociaciones detectadas en el EDA.
+
+------------------------------------------------------------------------
+
+## Bondad de ajuste
+
+Una vez construido el modelo, es necesario evaluar su capacidad
+predictiva sobre datos que no han sido utilizados durante el
+entrenamiento, el conjunto de 334 casos. Esta evaluación nos dará una
+estimación realista del comportamiento del modelo realmente.
+
+Se utilizará la matriz de confusión para analizar los tipos de error
+cometidos, y calcularemos métricas como Accuracy, Recall, Precisión y
+F1-Score.
+
+```{r}
+# Predicción sobre datos de test
+pred <- predict(model_tree, testX)
+
+# Matriz de confusión
+CrossTable(testy, pred,
+           prop.chisq = FALSE,
+           prop.c = FALSE,
+           prop.r = TRUE,
+           dnn = c("Real", "Predicción"))
+```
+
+Creamos una función para calcular las cuatro métricas para evaluar la
+bondad:
+
+```{r}
+# Función para calcular métricas
+metricas <- function(real, predicho, clase_positiva = "Default") {
+  
+  tp <- sum(real == clase_positiva & predicho == clase_positiva)
+  tn <- sum(real != clase_positiva & predicho != clase_positiva)
+  fp <- sum(real != clase_positiva & predicho == clase_positiva)
+  fn <- sum(real == clase_positiva & predicho != clase_positiva)
+  
+  accuracy  <- (tp + tn) / (tp + tn + fp + fn)
+  precision <- tp / (tp + fp)
+  recall    <- tp / (tp + fn)
+  f1        <- 2 * (precision * recall) / (precision + recall)
+  
+  data.frame(
+    Métrica = c("Accuracy", "Precision", "Recall", "F1"),
+    Valor   = round(c(accuracy, precision, recall, f1), 3)
+  )
+}
+
+# Aplicamos sobre las predicciones del modelo
+metricas(testy, pred)
+```
+
+Los resultados de la evaluación sobre el conjunto de test (334 casos)
+son los siguientes:
+
+| Métrica   | Valor |
+|-----------|-------|
+| Accuracy  | 69,8% |
+| Precisión | 50,5% |
+| Recall    | 47,1% |
+| F1-Score  | 48,7% |
+
+El modelo alcanza un **accuracy del 69.8%**, prácticamente idéntico a la
+proporción base del dataset (70% No_default). Esto significa que el
+modelo apenas mejora a un clasificador trivial que siempre predijera
+"No_default", lo que es una señal de rendimiento limitado.
+
+El dato más preocupante desde el punto de vista del negocio es el
+**Recall del 47.1%**: el modelo solo detecta correctamente 48 de los 102
+clientes que realmente van a incumplir, clasificando los 54 restantes
+como buenos pagadores. El **F1-score de 48,7%** confirma el rendimiento
+mediocre para la clase Default, resultado del equilibrio entre una
+Precisión (50,5%) y un Recall (47,1%).
+
+### Conclusión
+
+Podemos cuantificar el impacto económico real aplicando la matriz de
+costes asimétricas de la UCI:
+
+|                                            | Casos | Coste unitario | Coste total |
+|---------------------------------|-------------|-------------|-------------|
+| Falsos negativos (Default como No_default) | 54    | 5              | **270**     |
+| Falsos positivos (No_default como Default) | 47    | 1              | **47**      |
+| **Coste total del modelo**                 |       |                | **317**     |
+
+Como referencia, un clasificador trivial que siempre predijera
+No_default cometería 102 falsos negativos con un coste de **510
+unidades**. El modelo reduce el coste en un **37,8%** respecto a no
+tener modelo alguno, lo que supone una mejora real. Sin embargo, este
+margen es claramente insuficiente para un entorno bancario real, ya que
+aprobar créditos a más de la mitad de los clientes que van a incumplir
+supondría pérdidas significativas.
+
+Cabe destacar que todos los modelos de este análisis utilizan el
+**umbral de clasificación por defecto (0.5)**. Dado que la matriz de
+costes establece que un falso negativo es 5 veces más costoso que un
+falso positivo, en un entorno real sería reconmendable desplazar este
+umbral hacia valores menores, como 0.25. De esta manera se estaría
+forzando al modelo a ser más conservador al clasificar como No_default,
+incrementando así el Recall de la clase Default a costa de reducir la
+Precisión, sería como un *"trade-off"* justificado por la asimetría de
+costes del problema.
+
+La curva ROC representa gráficamente la capacidad discriminante del
+modelo para distintos umbrales de clasificación, mostrando la tasa de
+verdaderos positivos (Recall) frente a la tasa de falsos positivos. El
+área bajo la curva (AUC) resume esta capacidad en un único valor entre 0
+y 1, donde 0.5 equivale a clasificación aleatoria y 1.0 a clasificación
+perfecta:
+
+```{r}
+# Curva ROC y AUC
+pred_prob <- predict(model_tree, testX, type = "prob")[, "Default"]
+pred_rocr <- prediction(pred_prob, testy,
+                        label.ordering = c("No_default", "Default"))
+perf <- performance(pred_rocr, "tpr", "fpr")
+
+plot(perf, colorize = TRUE,
+     main = "Curva ROC — C5.0 básico",
+     xlab = "Tasa de Falsos Positivos (1 - Especificidad)",
+     ylab = "Tasa de Verdaderos Positivos (Sensibilidad)")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+
+auc <- performance(pred_rocr, "auc")@y.values[[1]]
+cat("AUC:", round(auc, 3))
+```
+
+El modelo obtiene un AUC de 0,689, lo que indica una capacidad
+discriminante moderada. El modelo es mejor que la clasificación
+aleatoria (AUC = 0.5) pero está lejos de un clasificador ideal (AUC
+=1.0). La curva ROC muestra que el modelo consigue una sensibilidad
+razonable para tasas de falsos positivos bajas (tramo inicial de la
+curva), pero se deteriora progresivamente a medida que se relaja el
+umbral de clasificación.
+
+Este valor de AUC, combinado con el Recall de 47,1% y el coste económico
+de 317 unidadesm confirma que el modelo C5.0 básico tiene margen de
+mejora significativo. Lo usaremos como **línea base** para comprarar los
+modelos alternativos del apartado siguiente.
+
+------------------------------------------------------------------------
+
+## Árboles de decisión complementarios
+
+El modelo C5.0 básico construido anteriormente ha mostrado un
+rendimiento limitado, con un Recall de 47,1% y un coste económico de 317
+unidades. Con el objetivo de mejorar la capacidad predictiva,
+especialmente en la detección de clientes con riesgo de impago,
+exploraremos tres modelos alternativos utilizando las mismas variables
+predictoras:
+
+-   **C5.0 con pruning:** variante del modelo original con un umbral de
+    confianza más restrictivo, que genera un árbol más simple y
+    generalizable. Además de buscar una mejora de rendimiento, esta
+    versión permitirá obtener una visualización más legible del árbol.
+
+-   **Random Forest:** modelo de ensamble basado en la combinación de
+    múltiples árboles de decisión entrenados sobre muestras aleatorias
+    del dataset. Su capacidad para reducir el sobreajuste y capturar
+    relaciones complejas lo convierte en una referencia habitual en
+    problemas de clasificación como este.
+
+-   **XGBoost:** algoritmo de gradient boosting que construye árboles de
+    forma secuencial, donde cada árbol corrige los errores del anterior.
+    Es uno de los algoritmos más potentes en competiciones y entornos
+    profesionales de machine learning.
+
+Al finalizar el apartado se presentará una **tabla comparativa** de los
+cuatro modelos (incluyendo el C5.0 básico) con las mismas métricas:
+Accuracy, Precisión, Recall, F1-Score, AUC y coste económico, para
+determinar qué enfoque es más adecuado para este problema.
+
+### C5.0 - Pruning
+
+```{r}
+# C5.0 con poda agresiva: CF=0.10 reduce la complejidad del árbol (default CF=0.25)
+model_pruning <- C5.0(trainX, trainy, control = C5.0Control(CF=0.10))
+summary(model_pruning)
+```
+
+```{r fig.width=15, fig.height=6}
+# Graficamos
+plot(as.party(model_pruning), gp=gpar(fontsize = 10))
+```
+
+Calculamos métricas de ajuste del modelo para comparar después:
+
+```{r}
+# Predicción en test
+pred_pruning <- predict(model_pruning, testX)
+
+# Matriz de confusión
+CrossTable(testy, pred_pruning,
+           prop.chisq = FALSE, prop.c = FALSE, prop.r = TRUE,
+           dnn = c("Real", "Predicción"))
+
+# Métricas
+metricas(testy, pred_pruning)
+
+# AUC
+pred_prob_pruning <- predict(model_pruning, testX, type = "prob")[, "Default"]
+pred_rocr_pruning <- prediction(pred_prob_pruning, testy,
+                                label.ordering = c("No_default", "Default"))
+auc_pruning <- performance(pred_rocr_pruning, "auc")@y.values[[1]]
+cat("AUC:", round(auc_pruning, 3))
+```
+
+### Random Forest
+
+```{r}
+library(randomForest)
+
+set.seed(20252)
+model_rf <- randomForest(x = trainX, 
+                         y = trainy,
+                         ntree = 500,
+                         importance = TRUE)
+print(model_rf)
+```
+
+En este caso tenemos 2 gráficos interesantes a visualizar:
+
+-   Un gráfico para ver a partir de cuantos árboles el error se
+    estabiliza.
+
+-   Ver la relevancia de las variables según el RF, lo que podremos
+    comparar con el ranking de V de Cramér del EDA y con el Attribute
+    usage del C5.0:
+
+```{r}
+# Gráfico 1: Error OOB vs número de árboles
+plot(model_rf, main = "Error OOB vs número de árboles")
+legend("topright", legend = colnames(model_rf$err.rate),
+       col = 1:3, lty = 1:3)
+
+# Gráfico 2: Importancia de variables
+varImpPlot(model_rf, main = "Importancia de variables — Random Forest")
+```
+
+El error OOB global se estabiliza a partir de 100 árboles
+aproximadamente, lo que indica que 500 árboles es suficiente, de hecho,
+añadir más no mejoraría el modelo. Se aprecia claramente el problema de
+desbalance, el error para la clase No_default es muy bajo, mientras que
+el error para la clase Default se mantiene elevado durante todo el
+entrenamiento.
+
+En el segundo gráfico vemos como MeanDecreaseAccuracy y MeanDecreaseGini
+coinciden en señalar `checking_balance`, `months_loan_duration` y
+`amount` como las variables más importantes, en línea con los resultados
+del análisis exploratorio. Destaca además que el Random Forest sí
+utiliza variables como `age`, `purpose` y `credit_history` que el C5.0
+básico ignoró, lo que refleja su mayor capacidad para capturar
+relaciones complejas entre variables. En el extremo opuesto,
+`dependents`, `foreign_worker` y `telephone`, aparecen como las menos
+relevantes, algo que ya se había visto durante el EDA.
+
+Calculamos las métricas para comparar después:
+
+```{r}
+# Predicción en test
+pred_rf <- predict(model_rf, testX)
+
+# Matriz de confusión
+CrossTable(testy, pred_rf,
+           prop.chisq = FALSE, prop.c = FALSE, prop.r = TRUE,
+           dnn = c("Real", "Predicción"))
+
+# Métricas
+metricas(testy, pred_rf)
+
+# AUC
+pred_prob_rf <- predict(model_rf, testX, type = "prob")[, "Default"]
+pred_rocr_rf <- prediction(pred_prob_rf, testy,
+                           label.ordering = c("No_default", "Default"))
+auc_rf <- performance(pred_rocr_rf, "auc")@y.values[[1]]
+cat("AUC:", round(auc_rf, 3))
+```
+
+### XGBoost
+
+```{r}
+library(xgboost)
+
+# XGBoost requiere matrices numéricas
+# Preparación de datos
+X_all <- rbind(trainX, testX)
+dummies <- dummyVars(~ ., data = X_all)
+X_all_mat <- predict(dummies, X_all)
+X_train <- X_all_mat[1:nrow(trainX), ]
+X_test  <- X_all_mat[(nrow(trainX)+1):nrow(X_all_mat), ]
+
+# Target como factor 0/1
+trainy_xgb <- factor(as.numeric(trainy == "Default"), levels = c(0, 1))
+testy_xgb  <- factor(as.numeric(testy  == "Default"), levels = c(0, 1))
+
+# Entrenamos
+set.seed(20252)
+model_xgb <- xgboost(x         = X_train,
+                     y         = trainy_xgb,
+                     nrounds   = 100,
+                     eval_metric = "logloss")
+
+print(model_xgb)
+
+```
+
+Graficamos:
+
+```{r}
+# Importancia de variables
+importance_xgb <- xgb.importance(model = model_xgb)
+xgb.plot.importance(importance_xgb, top_n = 15,
+                    main = "Importancia de variables — XGBoost")
+```
+
+Calculamos las métricas para comparar:
+
+```{r}
+# Predicción en test
+prob_xgb  <- predict(model_xgb, X_test)
+pred_xgb  <- factor(ifelse(prob_xgb > 0.5, 1, 0), levels = c(0, 1))
+testy_01  <- factor(as.numeric(testy == "Default"), levels = c(0, 1))
+
+# Matriz de confusión
+CrossTable(testy_01, pred_xgb,
+           prop.chisq = FALSE, prop.c = FALSE, prop.r = TRUE,
+           dnn = c("Real", "Predicción"))
+
+# Métricas
+metricas(testy_01, pred_xgb, clase_positiva = "1")
+
+# AUC
+pred_rocr_xgb <- prediction(prob_xgb, testy_01,
+                             label.ordering = c("0", "1"))
+auc_xgb <- performance(pred_rocr_xgb, "auc")@y.values[[1]]
+cat("AUC:", round(auc_xgb, 3))
+```
+
+### Comparativa de modelos
+
+| Modelo                 | Accuracy | Precision | Recall | F1-Score | AUC   |
+|------------------------|----------|-----------|--------|----------|-------|
+| C5.0 básico            | 69.8%    | 50.5%     | 47.1%  | 48.7%    | 0.689 |
+| C5.0 pruning (CF=0.10) | 70.4%    | 51.6%     | 47.1%  | 49.2%    | 0.720 |
+| Random Forest          | 73.7%    | 60.9%     | 38.2%  | 47.0%    | 0.770 |
+| XGBoost                | 72.2%    | 55.4%     | 45.1%  | 49.7%    | 0.759 |
+
+Para poder determinar si hay un enfoque notablemente mejor que el de
+base, lo más útil es recurrir a la matriz de costes asimétrica.
+
+Desde el punto de vista del **Recall**, la métrica más relevante dado
+que los falsos negativos cuestan 5 veces más que los falsos positivos,
+el C5.0 básico y el C5.0 pruning empatan en el mejor resultado (47,1%),
+seguidos del XGBoost (45,1%) y el Random Forest (38,2%). En este
+sentido, los modelos alternativos *"no mejoran"* al original en la
+métrica más importante para el negocio.
+
+Sin embargo, si consideramos el **AUC** como métrica de capacidad
+discriminante global, el Random Forest (0.770) y el XGBoost (0.759)
+superan claramente al C5.0 básico (0.689). Esto indica que estos modelos
+tienen mejor capacidad para separar las dos clases en general, aunque
+con el umbral de clasificación por defecto (0.5) no se traduzca en mejor
+Recall.
+
+Desde el punto de vista económico:
+
+| Modelo        | FN  | FP  | Coste (FN×5 + FP×1) |
+|---------------|-----|-----|---------------------|
+| C5.0 básico   | 54  | 47  | **317**             |
+| C5.0 pruning  | 54  | 45  | **315**             |
+| Random Forest | 63  | 25  | **340**             |
+| XGBoost       | 56  | 37  | **317**             |
+
+El modelo C5.0 pruning obtiene el menor Coste económico (315 unidades),
+aunque la diferencia con el básico es mínima. El Random Forest, pese a
+tener un mejor AUC, genera el mayor coste económico por sus numerosos
+falsos negativos.
+
+**Conclusión**
+
+Los resultados reflejan limitaciones inherentes del dataset: con solo
+1.000 observaciones, 20 variables de poder predictivo moderado y un
+desbalance de clases del 70/30, ningún modelo consigue superar el 50% de
+Recall en la clase Default.
+
+Por otro lado, destaca que el **XGBoost** identifica `amount` y
+`months_loan_duration` como las variables más importantes, mientras que
+el C5.0 sitúa a `checking_balance` en primer lugar. Esta discrepancia
+está reflejando las diferencias en cómo cada algoritmo captura las
+relaciones entre variables. *(El XGBoost al trabajar con variables
+dummy, puede capturar interacciones más granulares entre categorías
+específicas)*
+
+Teniendo en cuenta el contexto bancario y la matriz de costes
+asimétrica, el modelo recomendado sería el **C5.0 con pruning**: genera
+el menor coste económico (315 unidades), es el más interpretable de los
+cuatro y mantiene el mismo Recall que el modelo básico con un árbol más
+simple y generalizable. El **Random Forest** es la alternativa si se
+prioriza la capacidad discriminante global (AUC 0.770), y el **XGBoost**
+si se busca el equilibrio entre métricas (mejor F1-Score).
+
+En un banco real se complementarían con técnicas de balanceo de clases
+(SMOTE sobre el conjunto de entrenamiento), mayor volumen histórico de
+solicitudes, variables adicionales de comportamiento financiero (ratio
+deuda/ingresos verificado, historial de transacciones) y el ajuste del
+umbral de clasificación según la matriz de costes, aspectos que quedan
+fuera del alcance de esta práctica pero que serían el siguiente paso
+natural.
+
+### Métricas de explicabilidad
+
+Más allá de las métricas de rendimiento global, es importante entender
+cómo y por qué los modelos toman sus decisiones. Las métricas de
+explicabilidad nos permiten interpretar el comportamiento del modelo
+tanto a nivel global (qué variables son más importantes en general) como
+a nivel local (por qué el modelo clasificó a un cliente concreto como
+Default o No_default).
+
+Para ello utilizaremos el paquete `iml` sobre el Random Forest, por ser
+el modelo con mayor AUC (0.770), para poder calcular:
+
+-   **Importancia de variables del C5.0** (`attribute usage`): ya
+    analizada en el apartado de reglas — mide el porcentaje de casos en
+    los que cada variable interviene en las decisiones del árbol.
+-   **Feature Importance por permutación** (`iml`): mide cuánto empeora
+    el modelo cuando se aleatoriza cada variable. Responde a la pregunta
+    *"¿cuánto perdemos si eliminamos esta variable?"*
+-   **Efectos Locales Acumulados (ALE)**: visualizan cómo los distintos
+    valores de una variable afectan a la probabilidad de Default, de
+    forma más robusta que los gráficos de dependencia parcial ante
+    variables correlacionadas.
+-   **SHAP** (SHapley Additive exPlanations): descompone la predicción
+    de un caso concreto en la contribución individual de cada variable,
+    permitiendo explicar **por qué** el modelo tomó una decisión
+    específica para un cliente determinado. Es especialmente útil para
+    auditar casos dudosos o explicar decisiones de crédito a nivel
+    individual.
+
+```{r message=FALSE, warning=FALSE}
+library(iml)
+
+# Creamos el predictor IML sobre el Random Forest
+train_data <- cbind(trainX, default = trainy)
+
+# Creamos el predictor IML sobre el Random Forest
+predictor <- Predictor$new(
+  model = model_rf,
+  data  = trainX,
+  y     = trainy,
+  type  = "prob"
+)
+
+# Feature Importance por permutación
+
+#Fijamos semilla:
+set.seed(20252)
+imp <- FeatureImp$new(predictor, loss = "ce")
+plot(imp) +
+  ggtitle("Feature Importance por permutación — Random Forest") +
+  theme_minimal()
+
+
+```
+
+El gráfico confirma y enriquece los resultados. `checking_balance` es
+con diferencia la variable más importante (importancia alrededor de
+0.10), seguida de `purpose`, `months_loan_duration` y `savings_balance`.
+Esto es coherente con la V de Cramér calculada en el EDA, donde
+`checking_balance` obtuvo el valor más alto (0.352).
+
+Destacan las variables que el C5.0 ignoró por completo pero que el
+Random Forest consideró relevantes: `purpose` (segunda más importante),
+`savings_balance` (cuarta) y `age` (quinta). Esto refleja la mayor
+capacidad de Random Forest para capturar relaciones entre variables que
+un árbol simple no captura.
+
+En el extremo opuesto tenemos `dependents`, `telephone`,
+`foreign_worker`, `housing` y `existing_credits` presentan una
+importancia prácticamente nula, confirmando lo observado en el EDA.
+
+```{r}
+# ALE plots para las 3 variables más importantes
+ale_checking <- FeatureEffect$new(predictor, 
+                                   feature = "checking_balance",
+                                   method = "ale")
+plot(ale_checking) +
+  ggtitle("ALE — checking_balance") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ale_duration <- FeatureEffect$new(predictor,
+                                   feature = "months_loan_duration", 
+                                   method = "ale")
+plot(ale_duration) +
+  ggtitle("ALE — months_loan_duration") +
+  theme_minimal()
+
+ale_purpose <- FeatureEffect$new(predictor,
+                                  feature = "purpose",
+                                  method = "ale")
+plot(ale_purpose) +
+  ggtitle("ALE — purpose") +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**ALE — `checking_balance`:** El gráfico confirma el patrón detectado en
+el análisis exploratorio. Tener saldo negativo aumenta considerablemente
+la probabilidad de Default, mientras que `unknown` y `> 200 DM` la
+reducen significativamente. El saldo en cuenta corriente tiene un efecto
+directo y claro sobre el riesgo de impago.
+
+**ALE — `months_loan_duration`:** Se observa una relación clara: a mayor
+duración del préstamo, mayor probabilidad de Default. Los préstamos
+cortos favorecen el no impago, mientras que a partir de los 30 meses la
+probabilidad de Default aumenta progresivamente, estabilizándose en
+valores altos a partir de los 45 meses.
+
+**ALE — `purpose`:** La finalidad del préstamo muestra efectos
+heterogéneos. `car (new)` y `education` son los propósitos que más
+aumentan la probabilidad de Default, mientras que `car (used)` y
+`radio/tv` la reducen. Esto coincide con lo observado en las tablas de
+contingencia: los coches usados implican importes menores y plazos más
+cortos, mientras que la educación supone una inversión a largo plazo con
+retorno incierto.
+
+```{r}
+# SHAP para un cliente con Default y uno sin Default
+# Seleccionamos un caso de cada clase del test
+caso_default    <- testX[which(testy == "Default")[1], ]
+caso_nodefault  <- testX[which(testy == "No_default")[1], ]
+
+# SHAP para el caso Default
+shap_default <- Shapley$new(predictor, x.interest = caso_default)
+plot(shap_default) +
+  ggtitle("SHAP — cliente clasificado como Default") +
+  theme_minimal()
+
+# SHAP para el caso No_default
+shap_nodefault <- Shapley$new(predictor, x.interest = caso_nodefault)
+plot(shap_nodefault) +
+  ggtitle("SHAP — cliente clasificado como No_default") +
+  theme_minimal()
+```
+
+**SHAP — análisis de casos individuales:**
+
+Los valores SHAP permiten explicar por qué el modelo clasificó a dos
+clientes concretos de forma diferente:
+
+**Cliente clasificado como Default** (edad 63, préstamo 60 meses, saldo
+\< 0 DM, importe 6.836 DM):
+
+Las variables que más aumentan su probabilidad de Default son
+`checking_balance=< 0 DM` (+0.18) y `months_loan_duration=60` (+0.15).
+Es decir, tener saldo negativo y solicitar un préstamo a muy largo plazo
+son los factores determinantes que llevan al modelo a clasificarlo como
+cliente de riesgo. El importe moderado (6.836 DM) actúa ligeramente como
+factor protector.
+
+**Cliente clasificado como No_default** (edad 49, préstamo 12 meses,
+saldo unknown, importe 2.096 DM):
+
+Las variables que más reducen su probabilidad de Default son
+`checking_balance=unknown` y `amount=2096`. Tener un saldo desconocido
+(que como vimos en el EDA indica ausencia de cuenta corriente, no saldo
+negativo) combinado con un importe bajo y un préstamo corto (12 meses)
+lleva al modelo a clasificarlo como buen pagador.
+`credit_history=critical` actúa como factor de riesgo moderado pero no
+es suficiente para revertir la clasificación.
+
+En ambos casos, `checking_balance` emerge como la variable con mayor
+peso en la decisión individual, confirmando su papel central tanto a
+nivel global como local.
+
+Este nivel de granularidad local que proporcionan los valores SHAP es
+especialmente relevante en el contexto bancario, donde normativas de
+transparencia crediticia (como la Directiva Europea de Crédito al
+Consumo) exigen poder justificar de forma clara ante el cliente o ante
+un comité de riesgos el motivo técnico exacto de una denegación de
+solicitud.
+
+**Conclusión de explicabilidad**
+
+Las cuatro técnicas aplicadas convergen en el mismo mensaje: **el saldo
+en cuenta corriente** es el factor de riesgo más determinante, seguido
+de la duración del préstamo y la finalidad del crédito. Estos hallazgos
+son consistentes con el análisis exploratorio inicial y con las reglas
+extraídas del C5.0.
+
+El análisis SHAP añade una dimensión adicional al confirmar que esta
+jerarquía de variables no solo se cumple a nivel global sino también a
+nivel individual: en ambos casos analizados, `checking_balance` fue la
+variable con mayor peso en la decisión concreta del modelo.
+
+En definitiva, los tres modelos señalan al mismo tipo de cliente como el
+de mayor riesgo: alguien sin liquidez en cuenta que pide dinero prestado
+a largo plazo. Desde el punto de vista del banco, esto sugiere revisar
+con más cuidado las solicitudes de financiación superiores a 30 meses
+cuando el solicitante no tiene saldo positivo en cuenta,
+independientemente de otros factores del perfil.
+
+
+------------------------------------------------------------------------
+
+## Conclusiones finales
+
+Este trabajo ha abordado el problema de predicción de riesgo crediticio
+sobre el dataset German Credit mediante un proceso analítico completo,
+desde la exploración de los datos hasta la aplicación de múltiples
+modelos de clasificación.
+
+**Conocimiento adquirido sobre los datos:**
+
+El análisis exploratorio reveló que la situación financiera actual del
+cliente es más predictiva que su perfil sociodemográfico. Las variables
+`checking_balance`, `credit_history` y `savings_balance` concentran la
+mayor capacidad discriminante, mientras que variables como `dependents`,
+`telephone` o `residence_history` son prácticamente irrelevantes para
+predecir el impago. Destaca el hallazgo contraintuitivo de que clientes
+con historial `fully repaid` presentan tasas de default elevadas,
+posiblemente porque el banco les concede créditos nuevos sin historial
+activo reciente.
+
+**Resumen de modelos:**
+
+| Modelo                 | Accuracy | Precisión | Recall | F1    | AUC   |
+|------------------------|----------|-----------|--------|-------|-------|
+| C5.0 básico            | 69.8%    | 50.5%     | 47.1%  | 48.7% | 0.689 |
+| C5.0 pruning (CF=0.10) | 70.4%    | 51.6%     | 47.1%  | 49.2% | 0.720 |
+| Random Forest          | 73.7%    | 60.9%     | 38.2%  | 47.0% | 0.770 |
+| XGBoost                | 72.2%    | 55.4%     | 45.1%  | 49.7% | 0.759 |
+
+Ningún modelo supera el 50% de Recall en la clase Default, lo que
+refleja las limitaciones inherentes del dataset: 1.000 observaciones,
+variables de poder predictivo moderado y un desbalance de clases 70/30.
+
+**Modelo recomendado:**
+
+La elección depende del criterio priorizado. Aplicando la matriz de
+costes asimétrica de UCI (FN=5, FP=1), el **C5.0 con pruning** genera el
+menor coste económico (315 unidades) y mantiene el mejor Recall junto al
+C5.0 básico. Si se prioriza la capacidad discriminante global, el
+**Random Forest** (AUC=0.770) es la mejor opción. El **XGBoost** ofrece
+el mejor equilibrio entre métricas (F1=49.7%).
+
+**Perfil de riesgo identificado:**
+
+La concordancia de los cuatro modelos y las técnicas de explicabilidad
+apunta a un perfil de alto riesgo concreto: cliente con **saldo negativo
+en cuenta corriente**, que solicita un **préstamo de larga duración**
+(más de 30 meses) para financiar **su educación o un coche nuevo**. Este
+perfil no es una abstracción estadística sino una realidad operativa ya
+que, quien no tiene liquidez presente y se endeuda a largo plazo con un
+retorno de inversión incierto presenta sistemáticamente mayor
+probabilidad de impago en todos los modelos analizados.
+
+La recomendación directa para el banco sería implementar una regla de
+revisión manual obligatoria para solicitudes que combinen estas tres
+características simultáneamente.
+
+**Limitaciones y mejoras:**
+
+En un entorno bancario real, estos modelos se complementarían con:
+
+-   Técnicas de balanceo de clases (SMOTE) para mejorar el Recall.
+-   Mayor volumen de datos.
+-   Variables adicionales de comportamiento financiero.
+-   Ajuste del umbral de clasificación según la matriz de costes.
+
+------------------------------------------------------------------------
