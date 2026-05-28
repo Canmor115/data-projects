@@ -3,15 +3,15 @@ title: 'Credit Risk Prediction with Decision Trees'
 author: "Camila Andrea Moreno Ortiz"
 date: "April 2026"
 output:
-  pdf_document:
-    highlight: zenburn
-    toc: yes
   html_document:
     highlight: default
     number_sections: yes
     theme: cosmo
     toc: yes
     toc_depth: 2
+  pdf_document:
+    highlight: zenburn
+    toc: yes
   word_document: default
 editor_options: 
   markdown: 
