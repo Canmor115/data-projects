@@ -17,7 +17,7 @@ Esto convierte el problema en un ejercicio de optimización bajo restricciones d
 ```         
 credit-risk-prediction/
 ├── credit_risk_analysis.Rmd   # Análisis completo en R Markdown
-├── credit_risk_analysis.pdf   # Versión renderizada (GitHub Pages)
+├── credit_risk_analysis.html   # Versión renderizada (GitHub Pages)
 ├── data/
 │   └── credit.csv             # Dataset German Credit
 └── README.md
