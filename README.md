@@ -34,5 +34,5 @@ Clasificación de solicitantes de crédito (dataset German Credit) con árboles 
 
 ## 👩‍💻 Autora
 
-**Camila Andrea Moreno Ortiz**  
+**Camila Moreno Ortiz**  
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Camila%20Moreno-blue?style=flat&logo=linkedin)](https://www.linkedin.com/in/camila-andrea-moreno-ortiz/)
