@@ -15,10 +15,23 @@ El trabajo autónomo en Europa lleva más de una década en descenso. Pero este 
 ```
 eu-self-employment/
 ├── Trabajo_autonomo_UE_2010_2024.ipynb   # Notebook completo
+├── mapa_regiones_2024.html               # Mapa interactivo % autónomos por región
+├── mapa_mujeres_2010.html                # Mapa interactivo % mujeres autónomas 2010
+├── mapa_mujeres_2024.html                # Mapa interactivo % mujeres autónomas 2024
 └── README.md
 ```
 
 > Los datos se descargan directamente desde la API de Eurostat al ejecutar el notebook — no se incluyen CSVs estáticos.
+
+---
+
+## 🗺️ Mapas interactivos
+
+| Mapa | Enlace |
+|------|--------|
+| % Autónomos por región NUTS 2 (2024) | [Ver mapa](https://canmor115.github.io/data-projects/eu-self-employment/mapa_regiones_2024.html) |
+| % Mujeres autónomas por país (2010) | [Ver mapa](https://canmor115.github.io/data-projects/eu-self-employment/mapa_mujeres_2010.html) |
+| % Mujeres autónomas por país (2024) | [Ver mapa](https://canmor115.github.io/data-projects/eu-self-employment/mapa_mujeres_2024.html) |
 
 ---
 
@@ -90,16 +103,15 @@ Cobertura: **UE-27 + países candidatos**, 2010–2024, población de 20–64 a�
 ```python
 # Clonar el repositorio
 # Abrir Trabajo_autonomo_UE_2010_2024.ipynb en Jupyter o VS Code
+# Instalar dependencias: pip install folium branca seaborn
 # Ejecutar todas las celdas en orden
 # Los datos se descargan automáticamente desde la API de Eurostat
 ```
-
-> **Nota**: el notebook usa `!wget` para descargar los CSV — compatible con Linux/Mac. En Windows puede requerir sustituir por `urllib.request` o ejecutar desde WSL.
 
 ---
 
 ## 👩‍💻 Autora
 
-**Camila Moreno Ortiz**   
+**Camila Moreno Ortiz**
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Camila%20Moreno-blue?style=flat&logo=linkedin)](https://www.linkedin.com/in/camila-andrea-moreno-ortiz/)
