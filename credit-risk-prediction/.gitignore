@@ -1,0 +1,14 @@
+# R specific
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+ 
+# R Markdown output (keep .html for GitHub Pages, ignore others)
+*.pdf
+*.docx
+ 
+# OS files
+.DS_Store
+Thumbs.db
