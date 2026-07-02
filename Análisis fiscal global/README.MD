@@ -39,8 +39,9 @@ métricas propias:
 
 ## Ver el dashboard
 
-![Mapa de deuda animado](readme-assets/Dashboard Q1 Q2 y Q3.png)
-![Austeridad vs desempleo](readme-assets/Austeridad vs desempleo.png)
+![Mapa de deuda animado](readme-assets/Dashboard_Q1_Q2_Q3.png)   
+
+![Austeridad vs desempleo](readme-assets/Austeridad_vs_desempleo.png)
 
 - [Análisis fiscal global - mapa, scatter y matriz de riesgo](https://public.tableau.com/views/ViszQ1Q2yQ3/Anlisisfiscalglobal)
 - [Austeridad vs. desempleo - series temporales](https://public.tableau.com/views/ViszQ1Q2yQ3/AusteridadvsDesempleo)
