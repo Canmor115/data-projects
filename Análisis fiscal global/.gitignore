@@ -1,0 +1,20 @@
+# Entorno virtual (nunca se sube, cada persona crea el suyo)
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Datos y salidas generadas por el propio código
+data/*.csv
+figures/*.png
