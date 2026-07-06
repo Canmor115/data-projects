@@ -24,6 +24,15 @@ Clasificación de solicitantes de crédito (dataset German Credit) con árboles 
 
 ---
 
+### 💰 [¿Quién gestiona mejor sus finanzas públicas?](./An%C3%A1lisis%20fiscal%20global/)
+**Python · Pandas · Requests · Matplotlib · Seaborn · Tableau · Flourish · API del FMI**
+
+Análisis de 30 años de datos fiscales (1995–2024) para 182 países. Construcción de tres métricas propias (índice de salud fiscal, dinámica fiscal, score de vulnerabilidad) y dashboard interactivo con linking & brushing entre mapa, scatter y matriz de riesgo. Hallazgo central: la riqueza de un país no predice su salud fiscal — seis economías de renta alta están en situación crítica en 2024, y ningún país del G7 domina el ranking histórico.
+
+🔗 [Mapa y matriz de riesgo →](https://public.tableau.com/views/ViszQ1Q2yQ3/Anlisisfiscalglobal) · [Austeridad vs. desempleo →](https://public.tableau.com/views/ViszQ1Q2yQ3/AusteridadvsDesempleo) · [Ranking animado →](https://public.flourish.studio/visualisation/293399)
+
+---
+
 ## 🛠️ Stack tecnológico
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
