@@ -1,0 +1,1204 @@
+---
+title: 'Predicción de siniestralidad y segmentación de perfiles de riesgo en seguros de vehículos'
+subtitle: 'Parte 1: Preparación de datos y reducción de dimensionalidad'
+author: "Autor: Camila Andrea Moreno Ortiz"
+date: "2026"
+output:
+  html_document:
+    highlight: tango
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+------------------------------------------------------------------------
+
+# Introducción y planteamiento del estudio
+
+------------------------------------------------------------------------
+
+## Background (contexto y problema identificado)
+
+Este estudio se desarrolla desde la perspectiva del departamento de analítica de una aseguradora española especializada en vehículos de motor. La compañía gestiona una cartera de más de 100.000 pólizas activas distribuidas entre turismos, furgonetas, motocicletas y vehículos agrícolas, con presencia tanto en zonas rurales como urbanas.
+
+El sector asegurador de vehículos enfrenta dos retos analíticos recurrentes. El primero es la segmentación del riesgo: las primas se calculan habitualmente con criterios generales que no aprovechan los patrones latentes presentes en los datos de cartera, lo que puede derivar en un desconocimiento de los perfiles de riesgo reales. El segundo es la predicción de siniestralidad: disponer de un modelo que anticipe qué pólizas tienen mayor probabilidad de incurrir en siniestro permite optimizar la dotación de reservas técnicas y ajustar las primas de renovación.
+
+Mediante el uso de técnicas de reducción de dimensionalidad para simplificar variables complejas, es posible aplicar algoritmos de clustering que identifiquen segmentos de riesgo con gran precisión. Complementariamente, los modelos de clasificación permiten transformar el historial de la cartera en un predictor de siniestralidad robusto para la toma de decisiones
+
+## Objetivos y criterios de éxito
+
+**Objetivo principal:**
+
+Mejorar la gestión del riesgo de la cartera mediante la identificación de perfiles de riesgo homogéneos y el desarrollo de un modelo predictivo de siniestralidad, con el fin de optimizar la política de tarificación (pricing) y la dotación de reservas técnicas.
+
+**Objetivos secundarios:**
+
+- Identificar qué características del vehículo y del asegurado están más asociadas a la ocurrencia de siniestros.
+- Proporcionar una segmentación de la cartera que pueda integrarse en las estrategias de renovación y retención.
+
+**Criterios de éxito:**
+
+- **Segmentación de perfiles de riesgo (no supervisado)**: Obtener entre 3 y 6 clústers estables y bien diferenciados, validados mediante el índice de silhouette (valor objetivo \> 0.3) y la inercia intra-cluster.
+- **Predicción de siniestralidad (supervisado)**: Alcanzar una sensibilidad (*recall*) mínima del 60% sobre la clase positiva, priorizando este criterio sobre la precisión global, dado que en el contexto asegurador el coste de no detectar un siniestro (falso negativo) es superior al de una falsa alarma (falso positivo).
+- **Interpretabilidad**: Los segmentos y el modelo deben ser explicables e interpretables, no cajas negras.
+
+**Conexión entre objetivos:**
+
+Los segmentos identificados de forma no supervisada servirán como marco interpretativo para los resultados del modelo supervisado. Si ambos análisis convergen en los mismos factores de riesgo, se obtiene una validación cruzada que aporta mayor robustez a las conclusiones.
+
+Un modelo de siniestralidad con sensibilidad suficiente permitiría ajustar primas en renovación, reduciendo la ratio siniestralidad/prima. Una mejora del 1% en esta ratio tendrá un impacto directo en la cuenta técnica de la compañía.
+
+**Objetivo descartado:**
+
+Se consideró inicialmente modelizar la fuga de clientes como variable objetivo. Sin embargo, este objetivo fue descartado dado que la mayoría de las pólizas se renuevan automáticamente, generando una clase muy desbalanceada con escaso valor predictivo, y porque el dataset está diseñado específicamente para el análisis de siniestralidad según sus propios autores.
+
+## Justificación del dataset
+
+El conjunto de datos proviene de una compañía aseguradora real que opera en España, especializada en seguros de vehículos de motor. La información documenta las operaciones principales de la compañía durante un periodo de tres años completos, abarcando desde noviembre de 2015 hasta diciembre de 2018. Debido a la naturaleza sensible de la información comercial y personal, la base de datos ha sido meticulosamente anonimizada por los autores (Segura-Gisbert et al, 2024) para alinearse con la legislación europea vigente y garantizar la total privacidad y confidencialidad de los asegurados.
+
+La elección de este conjunto de datos se fundamenta en los siguientes motivos:
+
+- Las bases de datos de acceso abierto en la industria aseguradora son extremadamente raras. Las compañías son típicamente reacias a compartir estos datos, ya que constituyen el núcleo de su negocio y encapsulan toda la estructura de riesgo de la empresa. Trabajar con una cartera real aporta un valor diferencial al análisis frente a los datasets sintéticos.
+- Tal como mencionan los autores, este juego de datos ha sido diseñado para permitir que los investigadores identifiquen nuevos perfiles de riesgo y revelen las variables que influyen en el comportamiento de siniestralidad de los asegurados. Esta estructura dual encaja perfectamente con nuestro planteamiento analítico: técnicas no supervisadas sobre las características técnicas de los vehículos, y técnicas supervisadas para predecir la ocurrencia de siniestros.
+- **Volumen de datos:** La base original consta de 105.555 registros. Se trabaja sobre una muestra aleatoria de 10.000 registros para mantener el análisis manejable en tiempo de cómputo, fijando una semilla aleatoria para garantizar reproducibilidad.
+- **Variables:** Cuenta con un total de 30 variables. Estas incluyen una rica mezcla de variables económicas (prima o coste de siniestros), fechas (inicio de contrato o fecha de nacimiento), características técnicas (potencia, cilindrada o valor del vehículo) y atributos categóricos o binarios (zona rural/urbana o tipo de combustible).
+- **La variable objetivo, ocurrencia de siniestro:** Aunque no viene construida como un valor binario puro, el dataset proporciona las variables *número de siniestros* y *coste de siniestro* que permitirá derivarla de forma unívoca para las tareas de clasificación predictiva.
+- **Diccionario de datos:**
+  - ID: número de identificación interno asignado a cada contrato anual formalizado.
+  - Date_start_contract: Fecha de inicio del contrato del tomador (DD/MM/AAAA).
+  - Date_last_renewal: Fecha de la última renovación del contrato (DD/MM/AAAA).
+  - Date_next_renewal: Fecha de la próxima renovación del contrato (DD/MM/AAAA).
+  - Date_birth: Fecha de nacimiento del asegurado (DD/MM/AAAA).
+  - Date_driving_licence: Fecha de expedición del permiso de conducir del asegurado (DD/MM/AAAA).
+  - Distribution_channel: canal a través del cual se contrató la póliza. 0 para un agente, 1 para corredores de seguros independientes.
+  - Seniority: cantidad de años que el asegurado lleva vinculado a la entidad aseguradora.
+  - Policies_in_force: cantidad total de pólizas contratadas por el asegurado durante el periodo de referencia.
+  - Max_policies: cantidad máxima de pólizas que el asegurado ha tenido en vigor en algún momento con la entidad aseguradora.
+  - Max_products: cantidad máxima de productos que el asegurado ha tenido simultáneamente en un momento dado.
+  - Lapse: número de pólizas que el cliente ha cancelado o que han sido canceladas por impago en el año de vencimiento actual. Se excluyen aquellas pólizas que han sido sustituidas por otra póliza.
+  - Date_lapse: Fecha de recisión del contrato (DD/MM/AAAA).
+  - Payment: Último método de pago de la póliza de referencia. 1 para proceso semestral, 0 para pago anual.
+  - Premium: Prima, importe neto de la prima asociada a la póliza durante el año en curso.
+  - Cost_claims_year: coste total de los siniestros durante el año en curso.
+  - N_claims_year: cantidad total de siniestros incurridos por la póliza de seguro durante el año en curso.
+  - N_claims_history: cantidad total de siniestros presentados a lo largo de toda la vigencia de la póliza de seguro.
+  - R_Claims_history: ratio entre el número de siniestros presentados para la póliza específica y la duración total de la póliza en vigor (años completos).
+  - Type_risk: tipo de riesgo asociado a una póliza. 1 para motocicletas, 2 para furgonetas, 3 para turismos y 4 para vehículos agrícolas.
+  - Area: variable binaria que indica la zona de circulación. 0 para zonas rurales, 1 para zonas urbanas (zonas con más de 30.000 habitantes).
+  - Second_driver: variable binaria. 1 si hay varios conductores habituales declarados. 0 si solo hay un conductor declarado.
+  - Year_matriculation: año de matriculación del vehículo (AAAA)
+  - Power: Potencia del vehículo medida en caballos de vapor, CV.
+  - Cylinder_capacity: Cilindrada del vehículo.
+  - Value_vehicle: Valor de mercado del vehículo a 31 de diciembre de 2019.
+  - N_doors: número de puertas del vehículo.
+  - Type_fuel: Tipo de combustible, Gasolina (P) o diésel (D)
+  - Length: Longitud del vehículo en metros.
+  - Weight: Peso del vehículo en kilogramos
+
+## Consideraciones y limitaciones
+
+**Supuestos:**
+
+El dataset ha sido previamente anonimizado por sus autores conforme la legislación europea de datos (RGPD).\
+Los valores monetarios están expresados en euros netos de impuestos.
+
+El dataset está publicado bajo la licencia Creative Commons CC BY 4.0, permitiendo su uso para investigación y docencia.
+
+**Riesgos y contingencias:**
+
+- La variable objetivo presentará un desbalance natural ya que la mayoría de pólizas no tienen siniestro. Se contempla en la fase de modelado priorizando recall sobre accuracy.
+
+- Multicolinealidad: Variables como *potencia, cilindrada o valor del vehículo* presentan una correlación entre sí según señala el propio paper. El PCA aplicado en la fase de preparación mitigará este riesgo.
+
+- Limitación temporal: El dataset cubre el periodo 2015-2018, por lo que los modelos pueden no capturar cambios estructurales posteriores del mercado asegurador español.
+
+## Enfoque y reproducibilidad
+
+Para garantizar la calidad, el rigor y la reproducibilidad del estudio, el proyecto se estructura siguiendo las seis fases iterativas del estandar CRISP-DM: comprensión de los datos, preparación (limpieza, ingeniería de variables, reducción de dimensionalidad) en este primer notebook, y modelado (clustering + clasificación) en el segundo.
+
+Los resultados del estudio se presentan en formato RMarkdown ejecutable, generando un documento HTML reproducible que integra código, outputs y narrativa analítica. Esto garantiza que cualquier interesado pueda verificar y replicar el análisis completo a partir del código de este repositorio.
+
+------------------------------------------------------------------------
+
+# Comprensión de los datos (EDA)
+
+------------------------------------------------------------------------
+
+```{r message= FALSE, warning=FALSE}
+# IMPORTAMOS LIBRERÍAS
+if (!require('dplyr')) install.packages('dplyr')
+library(dplyr)
+if (!require('cluster')) install.packages('cluster') 
+library(cluster) 
+if (!require('dbscan')) install.packages('dbscan') 
+library(dbscan) 
+if (!require('ggplot2')) install.packages('ggplot2')
+library(ggplot2)
+if (!require('patchwork')) install.packages('patchwork')
+library('patchwork')
+if (!require('ggcorrplot')) install.packages('ggcorrplot')
+library('ggcorrplot')
+if (!require('GGally')) install.packages('GGally')
+library(GGally)
+if (!require('lubridate')) install.packages('lubridate')
+library(lubridate)
+if (!require('factoextra')) install.packages('factoextra')
+library(factoextra)
+if (!require('corrplot')) install.packages('corrplot')
+library(corrplot)
+
+```
+
+```{r message= FALSE, warning=FALSE}
+library(readr)
+Motor_vehicle_insurance_data <- read_delim("data/Motor vehicle insurance data.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+
+
+#Seleccionamos aleatoriamente 10.000 registros de los 105.555 existentes
+# Fijamos primero la semilla: 
+set.seed(20252)
+data <- Motor_vehicle_insurance_data %>% slice_sample(n = 10000)
+```
+
+Después de haber cargado nuestro juego de datos, vamos a realizar una exploración sencilla visualizando:
+
+- Los 5 primeros registros
+- Los estadísticos de aquellos atributos numéricos
+- La estructura del dataset con glimpse
+- La cantidad de valores nulos por columna
+
+```{r message=FALSE, warning=FALSE}
+head(data)
+summary(data)
+```
+
+```{r message=FALSE, warning=FALSE}
+glimpse(data)
+colSums(is.na(data))
+```
+
+A pesar de que el paper mencionaba que este dataset ya estaba limpio y que tan solo había un 1,7% de valores nulos en la variable `Type_fuel`, podemos ver que hay ciertos atributos que necesitan tratamiento. Aparte de `Type_fuel`, podemos ver que la variable `Length` contiene 963 valores nulos, debemos de explorar esta variable en concreto por si se trata de algún tipo de vehículo en concreto, ya que 9.63% de valores nulos si es algo preocupante. Por otro lado, vemos que la variable `Date_lapse` contiene un 67.73% de valores faltantes, lo cual es completamente esperado dado que esta variable se activa cuando una póliza es dada de baja, por lo que en este caso no es un problema de calidad.
+
+Gracias a la visualización de la estructura del dataset, podemos ver que los atributos que almacenan fechas están tratados como si fueran cadenas de caracteres, deberemos de tratar estas variables con librerías dedicadas al tratamiento de fechas.
+
+Adicionalmente, vemos que la variable `Power` tiene un valor mínimo de 0, la potencia de un vehículo no puede ser 0, este será otro registro a investigar.
+
+Antes de proceder al análisis visual, clasificaremos las variables por tipología, numéricas continuas, enteras, categóricas y fechas; para poder aplicar las visualizaciones más adecuadas.
+
+| Tipología de variable | Variables |
+|:-----------------------------------:|:---------------------------------:|
+| Numéricas continuas | `Premium, Cost_claims_year, R_Claims_history, Value_vehicle, Length` |
+| Enteras | `Seniority, Policies_in_force, Max_policies, Max_products, Lapse, N_claims_year, N_claims_history, Year_matriculation Power, Cylinder_capacity, N_doors, Weight` |
+| Categóricas | `Distribution_channel, Payment, Type_risk, Area, Second_driver, Type_fuel` |
+| Fecha | `Date_start_contract, Date_last_renewal, Date_next_renewal, Date_birth, Date_driving_licence, Date_lapse` |
+
+La variable `ID` es un identificador único sin valor analítico.
+
+En el caso de la variable `Year_matriculation` se tratará como variable entera en esta fase. Sin embargo, en el proceso de ingeniería de variables, esta será transformada en antigüedad del vehículo para mejorar la interpretabilidad.
+
+Para continuar con el EDA de este juego de datos vamos a realizar los siguientes gráficos:
+
+- Gráficos de barras para las variables categóricas.
+- Histogramas para los atributos físicos de los vehículos. Una distribución de algunas de ellas relacionándola con la variable `Type_risk`
+- Histogramas de los atributos de siniestralidad.
+- Matriz de correlaciones.
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8, out.width="100%"}
+# Gráficos de barras para las variables categóricas
+
+# 1º Preparamos etiquetas legibles para los gráficos:
+data_cat <- data%>%
+  mutate(
+    Distribution_label = factor (Distribution_channel, levels = c(0,1), 
+                         labels=c("Agente", "Broker")),
+    Payment_label = factor (Payment, levels = c(0,1), 
+                         labels=c("Anual", "Semestral")),
+    Type_risk_label = factor (Type_risk, levels = c(1,2,3,4),
+                              labels = c("Moto", "Furgoneta", 
+                                         "Turismos", "V.Agrícola")),
+    Area_label = factor (Area, levels = c(0,1), 
+                         labels=c("Rural", "Urbana")),
+    Driver_label = factor (Second_driver, levels = c(0,1), 
+                         labels=c("Un conductor", "Varios conductores")),
+    Type_fuel_label= factor (Type_fuel, labels=c("Diésel", "Gasolina")),
+    
+  )
+
+# Dibujamos las barras de conteo
+bar <- function (df, var, fill_color, titulo){
+  ggplot(df, aes(x=!!sym(var)))+
+    geom_bar(fill=fill_color)+
+    labs(title = titulo, x = NULL, y = "Nº pólizas")+
+    theme_minimal(base_size = 11)+
+    theme(plot.title = element_text(size = 10, face = "bold"))
+}
+
+# Dibujamos cada gráfico
+p1 <- bar(data_cat,"Distribution_label","#76B7B2","Canal de distribución")
+p2 <- bar(data_cat,"Payment_label","#59A14F", "Método de pago")
+p3 <- bar(data_cat,"Type_risk_label", "#4E79A7", "Tipo de riesgo")
+p4 <- bar(data_cat,"Area_label", "#F28E2B", "Zona de circulación")
+p5 <- bar(data_cat,"Driver_label", "#E15759", "Conductor habitual")
+p6 <- bar(data_cat,"Type_fuel_label",  "#B07AA1", "Tipo de combustible")
+
+# Visualizamos
+(p1 | p2 | p3) / (p4 | p5 | p6)+
+  plot_annotation(title = "Distribución de las variables categóricas",
+                  theme = theme(plot.title = element_text(face = "bold", size = 13)))
+
+```
+
+Podemos ver que la mayoría de las pólizas se corresponden a turismos, en zona rural y que hay una clara preferencia por el diésel.
+
+El canal de distribución muestra un equilibrio entre ambos métodos, sin embargo contratar la póliza a través de un agente directo es ligeramente más frecuente. Hay una clara preferencia a realizar el pago de manera anual, y en general, la mayoría de pólizas tienen declarado tan solo un conductor habitual.
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8, out.width="100%"}
+# Gráficos de los atributos físicos de los vehículos
+
+# Creamos función para graficar histogramas: 
+
+hist_simple <- function (df, var, fill_color, titulo, label_x){
+  df%>%
+    ggplot(aes(x=!!sym(var)))+
+    geom_histogram(bins = 40, fill=fill_color, color = "white")+
+    labs(title = titulo, x = label_x, y = "Frecuencia")+
+    theme_minimal(base_size = 11)+
+    theme(plot.title = element_text(size = 10, face = "bold"))
+}
+
+# Dibujamos cada gráfico
+h1 <- hist_simple(data,"Year_matriculation","#76B7B2","Año de matriculación", "Año")
+h2 <- hist_simple(data,"Power","#59A14F", "Potencia (CV)", "CV")
+h3 <- hist_simple(data,"Cylinder_capacity", "#4E79A7", "Cilindrada (cc)", "cc")
+h4 <- hist_simple(data,"Value_vehicle", "#F28E2B", "Valor del vehículo (€)", "€")
+h5 <- hist_simple(data,"Length", "#E15759", "Longitud (m)", "m")
+h6 <- hist_simple(data,"Weight",  "#B07AA1", "Peso (kg)", "kg")
+
+# Visualizamos
+h1 + h2 + h3 + h4 + h5 + h6 + 
+  plot_layout(ncol = 3) +
+  plot_annotation(title = "Distribución de características físicas del vehículo",
+                  theme = theme(plot.title = element_text(face = "bold", size = 13)))
+```
+
+Las variables físicas del vehículo presentan distribuciones asimétricas positivas, colas derechas asociadas a vehículos de alta gama o de gran tonelaje.
+
+El año de matriculación muestra un pico de concentración entre 2000 y 2010, previo al impacto de la crisis financiera de 2008, que frenó significativamente la renovación del parque automovilístico. Destaca también la presencia de un valor atípico correspondiente a un vehículo con más de 60 años de antigüedad, que merece una inspección puntual en la fase de limpieza para determinar si se trata de un registro legítimo o un error de entrada.
+
+La potencia presenta una cola derecha hacia vehículos de alta gama, correlacionada con la cilindrada y el valor económico del vehículo. En estos tres atributos se observan además valores cercanos a cero o directamente iguales a cero que requerirán investigación, ya que una potencia nula no es técnicamente posible en un vehículo en circulación y podría indicar errores de registro.
+
+A continuación exploramos si estas diferencias en potencia y valor de mercado varían según el tipo de vehículo asegurado:
+
+```{r message=FALSE, warning=FALSE}
+# Utilizamos las etiquetas usadas en los graficos anteriores
+
+# Potencia y Valor por Type_risk
+data_cat %>%
+  ggplot(aes(x = Power, fill = Type_risk_label)) +
+  geom_histogram(bins = 35, color = "white", show.legend = FALSE) +
+  facet_wrap(~Type_risk_label, scales = "free_y") +
+  labs(title = "Distribución de potencia por tipo de vehículo",
+       x = "Potencia (CV)", y = "Frecuencia") +
+  theme_minimal(base_size = 11) +
+  scale_fill_manual(values = c("#4E79A7","#F28E2B","#E15759","#59A14F"))
+
+data_cat %>%
+  ggplot(aes(x = Value_vehicle, fill = Type_risk_label)) +
+  geom_histogram(bins = 35, color = "white", show.legend = FALSE) +
+  facet_wrap(~Type_risk_label, scales = "free_y") +
+  labs(title = "Distribución del valor del vehículo por tipo",
+       x = "Valor (€)", y = "Frecuencia") +
+  theme_minimal(base_size = 11) +
+  scale_fill_manual(values = c("#4E79A7","#F28E2B","#E15759","#59A14F"))
+
+```
+
+La segmentación por tipo de vehículo revela perfiles de riesgo y valor claramente diferenciados. Los turismos presentan distribuciones de potencia y valor concentradas y simétricas, comportamiento propio de un segmento de mercado masivo con alta estandarización. Las motocicletas, por su parte, muestran un sesgo marcado hacia valores bajos tanto en potencia como en precio de mercado.
+
+Las furgonetas exhiben una distribución bimodal en potencia, lo que sugiere la existencia de dos submercados dentro de un mismo tipo de vehículo: reparto ligero y unidades de transporte de mayor capacidad, este aspecto habrá que investigarlo en profundidad ya que ambos perfiles pueden presentar comportamientos de siniestralidad diferentes.
+
+Finalmente, el segmento de vehículos agrícolas, aunque minoritario en volumen, destaca por una alta dispersión tanto en potencia como en valor de mercado. Esta variabilidad puede reflejar la gran variedad de estos vehículos, que puede ir desde pequeños tractores hasta equipos de gran tonelaje, pudiendo introducir complejidad en la estimación del riesgo asociado.
+
+En conjunto, la diversidad de perfiles vehiculares observada justifica la necesidad de una reducción de dimensionalidad que sintetice estas variables correlacionadas en componentes interpretables, tal como se abordará en la fase de preparación mediante PCA.
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8, out.width="100%"}
+# Histogramas y gráficos de barras de los atributos de siniestralidad. 
+
+# Prima
+s1 <- ggplot(data, aes(x = Premium)) +
+  geom_histogram(bins = 50, fill = "#4E79A7", color = "white") +
+  labs(title = "Prima neta (€)", x = "€", y = "Frecuencia") +
+  theme_minimal(base_size = 10)
+
+# Coste siniestros (solo pólizas con siniestro)
+# Quitamos del histograma aquellos valores de cero para poder evaluar la distribució n real
+
+s2 <- data %>% filter(Cost_claims_year > 0) %>%
+  ggplot(aes(x = Cost_claims_year)) +
+  geom_histogram(bins = 50, fill = "#E15759", color = "white") +
+  labs(title = "Coste siniestros — pólizas con daño (€)", x = "€", y = "") +
+  theme_minimal(base_size = 10)
+
+# Nº siniestros año
+s3 <- data %>%
+  count(N_claims_year) %>%
+  mutate(pct = n / sum(n)) %>%
+  ggplot(aes(x = factor(N_claims_year), y = n)) +
+  geom_col(fill = "#F28E2B", width = 0.6) +
+  geom_text(aes(label = scales::percent(pct, accuracy = 0.1)), 
+            vjust = -0.5, size = 2) +
+  labs(title = "Nº siniestros en el año", x = "Siniestros", y = "Frecuencia") +
+  theme_minimal(base_size = 10)
+
+# R_Claims_history
+s4 <- ggplot(data, aes(x = R_Claims_history)) +
+  geom_histogram(bins = 40, fill = "#76B7B2", color = "white") +
+  labs(title = "Ratio siniestralidad histórica", x = "Ratio", y = "") +
+  theme_minimal(base_size = 10)
+
+(s1 | s2) / (s3 | s4) +
+  plot_annotation(title = "Distribución de variables de siniestralidad",
+                  theme = theme(plot.title = element_text(face = "bold", size = 13)))
+```
+
+La prima neta presenta una distribución asimétrica positiva concentrada en el rango de 200-400€, coherente con una cartera dominada por turismos de gama media en circulación rural. La cola derecha, corresponde previsiblemente a vehículos de mayor valor o potencia, y será objeto de análisis en la fase de limpieza.
+
+El coste de siniestros, calculado únicamente sobre las pólizas que han registrado algún daño, muestra una asimetría muy pronunciada: la gran mayoría de los siniestros son de cuantía reducida, mientras que un número muy limitado de casos se sitúa en la cola derecha con importes que superan los 20.000€. Esta distribución de cola pesada es característica de los seguros de no-vida y tiene una implicación directa sobre la rentabilidad técnica de la compañía, ya que unos pocos siniestros de gran cuantía pueden comprometer el resultado de toda una cartera.
+
+El número de siniestros en el año confirma el marcado desbalanceo de la variable objetivo: el 81.5% de las pólizas no registra ningún siniestro en el período de referencia, y la frecuencia decrece rápidamente a partir de 1. Este desbalanceo deberá tenerse en cuenta en la fase de modelado, donde será necesario aplicar técnicas de remuestreo o ajuste de pesos para evitar que el modelo ignore la clase minoritaria.
+
+Finalmente, el ratio de siniestralidad histórica refuerza esta misma lectura a nivel de historial acumulado. La presencia de valores extremos en la cola derecha - ratios superiores a 5 o incluso a 15 - identifica un subconjunto de pólizas con una frecuencia de siniestros muy por encima de la media, lo que podría señalar clientes sistemáticamente no rentables para la compañía y que merecerán atención especial tanto en la segmentación como en el modelo predictivo.
+
+Visualizamos finalmente la matriz de correlacion:
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8, out.width="100%"}
+# Correlación entre variables numéricas
+
+numericas <- data %>%
+  select(Seniority, Policies_in_force, Max_policies, Max_products,
+         Premium, N_claims_year, N_claims_history,
+         R_Claims_history, Power, Cylinder_capacity,
+         Value_vehicle, Length, Weight) %>%
+  cor(use = "complete.obs") #Para obviar ls nulos de Length
+
+ggcorrplot(numericas,
+           type = "lower",
+           lab = TRUE,
+           lab_size = 2.5,
+           title = "Matriz de correlaciones — variables numéricas")
+```
+
+Se incluyen en la matriz las variables numéricas con valor analítico real, excluyendo variables que no aportan capacidad discriminante como `N_doors`.
+
+La matriz de correlaciones confirma y amplía los patrones identificados en el análisis univariante. El bloque de variables físicas del vehículo (`Power, Cylinder_capacity, Value_vehicle, Length, Weight`) presenta las correlaciones más elevadas del análisis. Destacan especialmente las dos principales correlaciones: `Length-Weight` (r=0.83) y `Cylinder_capacity - Weight` (r=0.76), demostrando que efectivamente los vehículos más grandes son también los más pesados y potentes. Esta multicolinealidad que ya se anticipaba en el estudio original de los datos, es precisamente la que justifica la necesidad de aplicar un PCA como paso previo al modelado para reducir redundancia de información.
+
+El bloque de siniestralidad muestra una correlación moderada entre`N_claims_year y N_claims_history` de r=0.39, lo esperable dado que el historial acumulado incluye el año en curso. La correlación algo más elevada entre `N_claims_year` y `R_Claims_history` de r=0.56 se explica porque este ratio pondera precisamente la frecuencia de siniestros a lo largo de la vida de la póliza.
+
+Las variables de vinculación del cliente muestran correlaciones moderadas entre sí, siendo la más destacada una correlación de r=0.78, los que nos indica que el número de las pólizas activas se aproxima al máximo histórico en clientes que mantienen una relación estable con la compañía.
+
+Notablemente, ninguna variable aislada muestra una correlación fuerte con las variables de siniestralidad del año en curso (`Cost_claims_year o N_claim_year`), lo que anticipa que la predicción de siniestros requerirá algoritmos capaces de capturar interacciones complejas entre múltiples factores, en lugar de basarse en dependencias lineales simples.
+
+En conclusión, el análisis exploratorio ha permitido caracterizar la cartera, identificar las principales relaciones entre variables y detectar los aspectos que requerirán atención en la fase de preparación: valores imposibles en `Power`, NAs en `Length` y `Type_fuel`, tipos incorrectos en las variables de fecha, y un marcado desbalance en la variable objetivo. Estos hallazgos guiarán las decisiones de la siguiente fase.
+
+------------------------------------------------------------------------
+
+# Preparación de los datos
+
+------------------------------------------------------------------------
+
+## Limpieza y gestión de nulos
+
+Para abordar esta fase primero se ha de investigar aquellos atributos que pueden tener registros "imposibles":
+
+- Power= 0
+- Vehicle_value \< 500
+
+Para continuar, se ha de investigar aquellos valores nulos de los siguientes atributos:
+
+- Length
+- Type_fuel
+- Date_lapse
+
+Finalmente, se ha de entrar de lleno en aquellos atributos con valores extremos, es decir, aquellos atributos que aunque tengan valores inusuales pueden ser legítimos y que requieran una decisión justificada antes de actuar sobre ellos:
+
+- Year_matriculation - vehículo \>60años
+- Power - cola derecha extrema y posible bimodalidad
+- R_Claims_history - clientes poco rentables
+- Cost_claims_year - siniestros de gran cuantía
+- Value_vehicle - cola derecha extrema
+- Weight - cola derecha extrema
+
+**Registros "Imposibles":**
+
+```{r message=FALSE, warning=FALSE}
+# 1. Power = 0
+
+cat("Registros con Power = 0:", sum(data$Power == 0, na.rm = TRUE), "\n")
+
+# Cruzamos este atributo con otros determinantes como: 
+data%>%
+  group_by(Type_risk) %>%
+  summarise(
+    total = n(),
+    nulos = sum(Power == 0),
+    pct_nulos = round(sum(Power == 0) / n() * 100, 1),
+  )
+data %>% 
+  filter(Power == 0 & Type_risk == 1) %>%
+  select(ID, Type_risk, Power, Cylinder_capacity, Value_vehicle, Weight, N_doors)
+
+```
+
+Se detectan 153 registros con Power = 0 (1,53% de la muestra), correspondientes en su totalidad a motocicletas (140 registros) y vehículos agrícolas (13 registros).
+
+El cruce con `Cylinder_capacity` y `Value_vehicle` confirma que estos vehículos son reales y válidos, ya que presentan cilindridadas coherentes y valores de mercado razonables.
+
+Todo apunta a que esos valores de potencia = 0 se corresponde con ausencia de registros en ese atributo. En este caso, eliminar registros introduciría un sesgo significativo al perder gran parte de registros de motocicletas.
+
+La decisión es imputar aquellos valores iguales a 0 por la mediana del mismo tipo de vehículo. De esta manera no se pierde ninguna observación.
+
+```{r message=FALSE, warning=FALSE}
+# Calculamos medianas por tipo
+mediana_power_tipo <- aggregate(Power ~ Type_risk, 
+                                data = data[data$Power > 0, ], 
+                                FUN = median)
+print(mediana_power_tipo)
+```
+
+```{r message=FALSE, warning=FALSE}
+data_clean <- data
+data_clean$Power[data_clean$Power == 0 & 
+                 data_clean$Type_risk == 1] <- mediana_power_tipo$Power[mediana_power_tipo$Type_risk == 1]
+data_clean$Power[data_clean$Power == 0 & 
+                 data_clean$Type_risk == 4] <- mediana_power_tipo$Power[mediana_power_tipo$Type_risk == 4]
+
+# Verificamos
+sum(data_clean$Power == 0)
+```
+
+```{r message=FALSE, warning=FALSE}
+# 2. Value_vehicle < 500
+
+cat("Registros con Cylinder_capacity = 0:", sum(data$Value_vehicle < 500, na.rm = TRUE), "\n")
+
+# Cruzamos este atributo con otros determinantes como: 
+data %>% 
+  filter(Value_vehicle < 500) %>%
+  select(Type_risk, Power, Cylinder_capacity, Value_vehicle, Weight, Area, N_doors)
+```
+
+Se detectan 6 registros con un valor económico inferior a 500€. El cruce con el resto de variables muestra que corresponden a turismos de muy baja potencia y peso reducido, coherente con vehículos ligeros o cuadriciclos. No se trata por tanto de errores de registro, por lo que se conservan.
+
+**Valores nulos**
+
+**- Length**
+
+```{r message=FALSE, warning=FALSE}
+data %>%
+  group_by(Type_risk) %>%
+  summarise(
+    total = n(),
+    nulos_length = sum(is.na(Length)),
+    pct_nulos = round(sum(is.na(Length)) / n() * 100, 1)
+  )
+
+data %>% 
+  filter(is.na(Length)) %>%
+  select(Type_risk, Power, Cylinder_capacity, Value_vehicle, Weight, Area, N_doors)
+```
+
+Como podemos ver, el 100% de las motos y el 97,4% de los vehículos agrícolas presentan un valor de Length NA, frente al 1,9% en furgonetas y 0,9% en turismos. Esto nos recuerda que la longitud no es una medida registrada para motos ni para vehículos agrícolas.
+
+Los NAs en estos tipos son estructurales, no un error de registro. Para furgonetas y turismos son residuales que sí responden a ausencias puntuales que pueden imputarse.
+
+Por lo que se decide imputar esos Nas con la mediana por tipo de vehículo.
+
+```{r message=FALSE, warning=FALSE}
+# Calculamos medianas de Length por tipo 
+# (solo furgonetas y turismos, excluyendo NAs)
+mediana_length_tipo <- aggregate(Length ~ Type_risk, 
+                                 data = data[!is.na(data$Length), ], 
+                                 FUN = median)
+print(mediana_length_tipo)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+# Imputamos 
+data_clean$Length[is.na(data_clean$Length) & 
+                  data_clean$Type_risk == 2] <- mediana_length_tipo$Length[mediana_length_tipo$Type_risk == 2]
+
+data_clean$Length[is.na(data_clean$Length) & 
+                  data_clean$Type_risk == 3] <- mediana_length_tipo$Length[mediana_length_tipo$Type_risk == 3]
+
+# Verificamos
+data_clean %>%
+  group_by(Type_risk) %>%
+  summarise(nulos = sum(is.na(Length)))
+```
+
+**- Type_fuel**
+
+```{r message=FALSE, warning=FALSE}
+data_clean %>%
+  group_by(Type_risk) %>%
+  summarise(
+    total = n(),
+    nulos = sum(is.na(Type_fuel)),
+    pct_nulos = round(sum(is.na(Type_fuel)) / n() * 100, 1),
+    moda = names(sort(table(Type_fuel), decreasing = TRUE))[1]
+  )
+
+data %>% 
+  filter(is.na(Type_fuel)) %>%
+  select(ID, Type_risk, Type_fuel, Power, Cylinder_capacity, Value_vehicle, Weight, Area, N_doors)
+```
+
+Como podemos ver, los Nas de `Type_fuel` parece que pertenecen a los mismos registros donde Power=0, es decir, vehículos con datos incompletos. La moda es clara y coherente con el dominio: gasolina para motos y diésel para vehículos agrícolas.
+
+Por lo que vamos a imputar dichos valores por la moda por tipo explícitamente:
+
+```{r message=FALSE, warning=FALSE}
+# Imputamos 
+data_clean$Type_fuel[is.na(data_clean$Type_fuel) & 
+                     data_clean$Type_risk == 1] <- "P"
+
+data_clean$Type_fuel[is.na(data_clean$Type_fuel) & 
+                     data_clean$Type_risk == 4] <- "D"
+
+# Verificamos
+sum(is.na(data_clean$Type_fuel))
+```
+
+**- Date_lapse**
+
+```{r message=FALSE, warning=FALSE}
+# Verificamos la ausencia en Date_lapse
+cat("NAs en Date_lapse:", sum(is.na(data_clean$Date_lapse)), "\n")
+cat("Porcentaje:", round(sum(is.na(data_clean$Date_lapse))/nrow(data_clean)*100, 1), "%\n")
+
+# Cruzamos con Lapse (Nº polizas canceladas)
+table(data_clean$Lapse, is.na(data_clean$Date_lapse))
+
+# Investigamos los registros con Lapse = 0 pero con Date_lapse
+data_clean %>%
+  filter(Lapse == 0 & !is.na(Date_lapse)) %>%
+  select(Lapse, Date_lapse, Date_last_renewal, Date_next_renewal, 
+         Policies_in_force, Max_policies) %>%
+  head(20)
+```
+
+La mayoría de los valores nulos se correponden con pólizas con Lapse = 0, es decir, no ha habido cancelación y por tanto no hay fecha de cancelación, es una ausencia informativa.
+
+El caso más llamativo son los 1.429 registros con Lapse = 0 pero con fecha de baja registrada. Dado que el dataset registra múltiples anualidades del mismo cliente (cada fila representa una póliza en un periodo concreto), la hipótesis más plausible es que el campo `Date_lapse` esté heredando la fecha de una cancelación ocurrida en un año anterior, sin actualizarse correctamente al renovarse la póliza.
+
+Por otro lado, los 191 registros con Lapse = 1 pero sin fecha de baja indican errores puntuales de captura en el sistema de información (se registró la cancelación pero no la fecha asociada).
+
+Se decide no imputar ni corregir los registros ya que la inconsistencia detectada de un 14.3% de la muestra es suficientemente significativa como para descartar el uso de `Date_lapse` en el modelado con garantías de fiabilidad.
+
+**Outliers**
+
+**Year_matriculation - Antigüedad de más de 60 años**
+
+```{r message=FALSE, warning=FALSE}
+# Year_matriculation — vehículo con más de 60 años
+# Tomamos como año de referencia 2018 según el estudio del que proceden los datos
+
+reference_year <- 2018
+data_clean %>%
+  mutate(Vehicle_age = reference_year - Year_matriculation) %>%
+  filter(Vehicle_age > 60) %>%
+  select(Type_risk, Year_matriculation, Power, 
+         Cylinder_capacity, Value_vehicle, Weight)
+```
+
+Se detectan 4 registros con antigüedad superior a 60 años, todos correspondientes a motocicletas. Las características de estos vehículos son coherentes con motos clásicas de época. No se trata de errores de registro sino de vehículos históricos legítimamente asegurados. Por lo que a pesar de ser casos aislados, son registros reales.
+
+**Power - cola derecha**
+
+```{r message=FALSE, warning=FALSE}
+# Power — distribución por tipo
+data_clean %>%
+  group_by(Type_risk) %>%
+  summarise(
+    max_power = max(Power, na.rm = TRUE),
+    n_extremos = sum(Power > 300, na.rm = TRUE)
+  )
+
+# Visualizamos los turismos concretamente con más de 300 CV
+data_clean %>%
+  filter(Type_risk == 3 & Power > 300) %>%
+  select(Type_risk, Power, Cylinder_capacity, 
+         Value_vehicle, Weight, Year_matriculation)
+
+# Verificamos el registro sospechoso
+data_clean %>%
+  filter(Type_risk == 3 & Power == 310) %>%
+  select(Type_risk, Power, Cylinder_capacity, 
+         Value_vehicle, Weight, N_doors, Year_matriculation)
+```
+
+Se detectan 7 turismos con una potencia superior a 300 CV. Seis de ellos presentan características coherentes con vehículos de alta gama (cilindradas superiores a 2.000 cc y valores económicos superiores a 60.000€), por lo que se conservan.
+
+Sin embargo, un registro presenta una combinación técnicamente imposible, 310CV con una cilindrada de 599 cc y un peso de 680kg en un turismo de 5 puertas. Esta combinación parece imposible ya que un motor de 599cc no puede generar 310 CV, además de no poder pesar tan solo 680 kg. Probablemente se trate de un error en la clasificación en Type_risk o en las escalas de cilindrada y peso. Se decide eliminar este único registro al no poder determinarse con certeza cuál es el campo erróneo, y al tener una combinación de valores técnicamente inviables.
+
+```{r message=FALSE, warning=FALSE}
+# Eliminamos el turismo con combinación imposible Power/Cylinder_capacity
+data_clean <- data_clean %>%
+  filter(!(Type_risk == 3 & Power == 310 & Cylinder_capacity == 599))
+
+# Verificamos
+nrow(data_clean)
+```
+
+**Power - bimodalidad en furgonetas**
+
+Se procede a cruzar los datos de la potencia con los datos de peso y valor económico para investigar si realmente hay dos tipos de furgonetas.
+
+```{r message=FALSE, warning=FALSE}
+# Bimodalidad en furgonetas — investigamos los dos picos
+summary(data_clean$Power[data_clean$Type_risk == 2])
+
+# Visualizamos el histograma: 
+data_clean %>%
+  filter(Type_risk == 2) %>%
+  ggplot(aes(x = Power)) +
+  geom_histogram(bins = 40, fill = "#F28E2B", color = "white") +
+  labs(title = "Distribución de potencia — Furgonetas",
+       x = "Potencia (CV)", y = "Frecuencia") +
+  theme_minimal()
+
+# Cruzamos Power con Weight en furgonetas
+data_clean %>%
+  filter(Type_risk == 2) %>%
+  mutate(grupo = ifelse(Power < 80, "Ligera (<80CV)", "Pesada (>=80CV)")) %>%
+  group_by(grupo) %>%
+  summarise(
+    n = n(),
+    mediana_power = median(Power),
+    mediana_weight = median(Weight),
+    mediana_value = median(Value_vehicle)
+  )
+```
+
+La distribución de potencia en furgonetas muestra dos zonas de concentración: un primer grupo en torno a 70-75 CV y un segundo pico más pronunciado en 90-100 CV.
+
+El cruce con las otras variables confirma que los dos picos corresponden a dos submercados reales dentro del segmento de las furgonetas. Las furgonetas ligeras con una potencia inferior a 80 CV presentan un peso mediano de 1.190 kg y un valor medio de 14.390€, mientras que las pesadas, con una potencia superior a 80CV, alcanzan un peso mediano de 1650 kg y un valor ed 21.713€. Esta diferencia de casi 500kg de peso y más de 7.000€ en valor de mercado evidencia que se trata de perfiles vehiculares distintos (reparto ligero urbano vs transporte de mayor capacidad) y no de errores de clasificación de tipo de vehículo.
+
+Se decide conservar todos los registros. La bimodalidad es informativa y podrá ser capturada por los algoritmos de clustering posteriormente, donde estos subgrupos podrían emerger con clusters diferenciados dentro del segmento de furgonetas.
+
+**R_Claims_history**
+
+```{r message=FALSE, warning=FALSE}
+# R_Claims_history — clientes con ratio extremo
+summary(data_clean$R_Claims_history)
+
+# Cuántos superan umbrales relevantes
+cat("R_Claims_history > 5:", sum(data_clean$R_Claims_history > 5, na.rm = TRUE), "\n")
+cat("R_Claims_history > 10:", sum(data_clean$R_Claims_history > 10, na.rm = TRUE), "\n")
+cat("R_Claims_history > 15:", sum(data_clean$R_Claims_history > 15, na.rm = TRUE), "\n")
+
+data_clean %>%
+  filter(R_Claims_history > 15) %>%
+  select(Seniority, N_claims_history, R_Claims_history, 
+         N_claims_year, Premium, Type_risk)
+```
+
+La variable `R_Claims_history` se define como el número de siniestros dividido entre la duración total de la póliza en años completos, y esa duración puede ser menor que `Seniority` si la póliza es más reciente que la antigüedad del cliente.
+
+Vemos que para el registro 1, hay 5 años de antigüedad del asegurado, 10 siniestros históricos: ratio = 10/5 = 2, no 22.81.
+
+Por otro lado, para el registro 2, hay 4 años de antigüedad del asegurado, 9 siniestros históricos: ratio 9/4 = 2.25, no 21.47.
+
+Por lo que se concluye que para obtener unos ratios de 22.8 y 21.5, se necesitaría una duración de una póliza de menos de 1 año para llegar a esos ratios, lo que no tiene sentido alguno.
+
+Se decide eliminar los registros:
+
+```{r message=FALSE, warning=FALSE}
+data_clean <- data_clean %>%
+  filter(R_Claims_history <= 15)
+#Verificamos: 
+max(data_clean$R_Claims_history)
+```
+
+**Cost_claims_year**
+
+```{r message=FALSE, warning=FALSE}
+summary(data_clean$Cost_claims_year)
+cat("Siniestros > 20.000€:", sum(data_clean$Cost_claims_year > 20000, na.rm = TRUE), "\n")
+cat("Siniestros > 10.000€:", sum(data_clean$Cost_claims_year > 10000, na.rm = TRUE), "\n")
+```
+
+Se detectan 14 registros con coste de siniestro superior a 10.000€, de los cuales 5 superan los 20.000€, alcanzando un máximo de 29.255€.
+
+Estos importes son perfectamente plausibles, siniestros con daños corporales graves, vehículos de alta gama o accidentes con múltiples implicados pueden superar fácilmente estas cifras. El volúmen es mínimo (0.05% de la muestra) y no distorsiona el análisis.
+
+Se conservan todos los registros.
+
+**Value_vehicle y Weight**
+
+```{r message=FALSE, warning=FALSE}
+# Value_vehicle y Weight — colas derechas
+summary(data_clean$Value_vehicle)
+summary(data_clean$Weight)
+
+cat("Value_vehicle > 80.000€:", sum(data_clean$Value_vehicle > 80000, na.rm = TRUE), "\n")
+cat("Weight > 3.000kg:", sum(data_clean$Weight > 3000, na.rm = TRUE), "\n")
+
+# Cruzamos con Type_risk
+data_clean %>%
+  filter(Value_vehicle > 80000) %>%
+  count(Type_risk)
+
+data_clean %>%
+  filter(Weight > 3000) %>%
+  count(Type_risk)
+```
+
+Se detectan 7 turismos con valor superior a 80.000€ y 46 vehículos agrícolas con peso superior a 3.000kg con un máximo de 5.455kg.
+
+Ambos grupos son coherentes con sus respectivos segmentos. Por lo que se conservan todos los registros. Son casos extremos legítimos que representan segmentos reales de cartera y cuya eliminación introduciría un sesgo no justificado.
+
+```{r message=FALSE, warning=FALSE}
+cat("Registros originales: 10.000\n")
+cat("Registros tras limpieza y outliers:", nrow(data_clean), "\n")
+cat("Registros eliminados:", 10000 - nrow(data_clean), "\n")
+cat("NAs restantes:\n")
+print(colSums(is.na(data_clean)))
+```
+
+A pesar de que los autores del dataset señalaban que el conjunto de datos fue sometido a un exhaustivo proceso de control de calidad previo a su publicación, se ha realizado una inspección propia e independiente siguiendo las buenas prácticas de minería de datos.
+
+Esta revisión ha permitido identificar aspectos no documentados en el paper: valores de potencia no registrados en motos y vehículos agrícolas, combustible ausente en los mismos segmentos, inconsistencias en Date_lapse y dos registros con ratios de siniestralidad matemáticamente incoherentes. Tras aplicar todas las decisiones que se documentan en los apartados anteriores, el dataset no se ha visto reducido en gran medida, ya que algunos fueron imputados por la mediana de su segmento concreto y tan solo 3 registros fueron eliminados.
+
+## Ingeniería de variables
+
+Tras haber realizado una limpieza y un tratamiento de outliers exhaustivo, se procede a realizar una serie de operaciones de transformación de variables con el objetivo de convertir el juego de datos en un formato útil en términos analíticos. Para ello, será necesario:
+
+- Convertir formatos de fechas.
+- Verificar consistencias temporales.
+- Crear la variable objetivo.
+- Factorizar variables categóricas.
+- Eliminar variables no necesarias para el modelado.
+- Estandarizar las variables necesarias para la reducción de dimensionalidad, PCA /SVD.
+
+**Conversión de fechas**
+
+```{r message=FALSE, warning=FALSE}
+# Definimos la fecha de referencia - último día del periodo de observación del dataset
+date_reference <- dmy("31/12/2018")
+
+# Conversión a formato Date
+data_clean <- data_clean %>%
+  mutate(
+    
+    Date_start_contract = dmy(Date_start_contract),
+    Date_last_renewal = dmy(Date_last_renewal),
+    Date_next_renewal = dmy(Date_next_renewal),
+    Date_birth = dmy(Date_birth),
+    Date_driving_licence = dmy(Date_driving_licence),
+    
+    # Derivaciones numéricas
+    Age_driver = as.numeric(interval(Date_birth, date_reference)/years(1)),
+    Years_licence = as.numeric(interval(Date_driving_licence, date_reference)/years(1)),
+    Policy_age = as.numeric(interval(Date_start_contract, date_reference)/years(1)),
+    Vehicle_age = 2018 - Year_matriculation
+  )
+
+# Verificamos tipos tras la conversión
+data_clean %>%
+  select(Date_birth, Date_driving_licence, Date_start_contract,
+         Date_last_renewal, Date_next_renewal) %>%
+  glimpse()
+
+# Verificamos las nuevas variables:
+data_clean %>%
+  select(Age_driver, Years_licence, Policy_age, Vehicle_age) %>%
+  summary()
+ 
+```
+
+**Consistencias temporales:**
+
+Una fecha de nacimiento posterior a la fecha de expedición del carnet, o una fecha de última renovación posterior a la siguiente renovación, serían indicadores claros de errores de registro que contaminarían las variables derivadas.
+
+```{r message=FALSE, warning=FALSE}
+cat("Date_birth posterior a Date_driving_licence:", 
+    sum(data_clean$Date_birth > data_clean$Date_driving_licence, na.rm = TRUE), "\n")
+
+cat("Date_driving_licence posterior a Date_start_contract:", 
+    sum(data_clean$Date_driving_licence > data_clean$Date_start_contract, na.rm = TRUE), "\n")
+
+cat("Date_last_renewal posterior a Date_next_renewal:", 
+    sum(data_clean$Date_last_renewal > data_clean$Date_next_renewal, na.rm = TRUE), "\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+# Visualizamos esos casos donde la fecha de inicio de contrato es posterior a la fecha de expedición de la licencia
+data_clean %>%
+  filter(Date_driving_licence > Date_start_contract) %>%
+  select(Date_birth, Date_driving_licence, Date_start_contract, 
+         Age_driver, Years_licence, Policy_age) %>%
+  head(10)
+```
+
+Se observa que las diferencias son mínimas y corresponden a situaciones plausibles, es posible que se asegurara el vehículo antes de obtener el carnet definitivo.
+
+**Variable objetivo**
+
+Uno de los requisitos para abordar uno de los objetivos, es disponer de una variable objetivo que indique si una póliza ha incurrido en siniestro durante el año en curso o no. El dataset original no proporciona esta variable de forma explícita, pero si contiene `N_claims_year`: el número total de siniestros incuridos por póliza de seguro durante el año en curso.
+
+La transformación es directa: cualquier póliza con al menos un siniestro registrado se etiqueta como `Claim = 1`, mientras que las pólizas sin siniestros se etiquetan como `Claim=0` . Esta transformación implica una pérdida de información:: no distingue entre pólizas más rentables o menos rentables. sin embargo, los objetivos de este estudio de clasificación binaria y segmentación perfiles de riesgo, esta simplificación es justificada. El análisis de severidad o frecuencia exacta de siniestros queda fuera del alcance de este proyecto.
+
+Como se anticipaba en la evaluación de la situación, la variable `Claim` presentará un desbalance natural (confirmado en el EDA con un 81.5% de pólizas sin siniestro) que deberá tenerse en cuenta en la fase de modelado de la segunda parte de este proyecto.
+
+```{r message=FALSE, warning=FALSE}
+# Creamos la variable objetivo Claim
+data_clean$Claim <- ifelse(data_clean$N_claims_year > 0, 1, 0)
+
+# Verificamos el desbalance de clases
+table(data_clean$Claim)
+prop.table(table(data_clean$Claim))
+
+# Visualizamos el desbalance de clases
+data_clean %>%
+  mutate(Claim_label = factor(Claim, levels = c(0,1), 
+                              labels = c("Sin siniestro", "Con siniestro"))) %>%
+  ggplot(aes(x = Claim_label)) +
+  geom_bar(fill = c("#76B7B2", "#E15759")) +
+  geom_text(stat = "count", 
+            aes(label = scales::percent(after_stat(count)/sum(after_stat(count)), 
+                                        accuracy = 0.1)),
+            vjust = -0.5, size = 4) +
+  labs(title = "Distribución de la variable objetivo Claim",
+       x = NULL, y = "Nº pólizas") +
+  theme_minimal()
+
+# Visualizamos el gráfico calculado en la fase anterior Nº siniestros año
+s3
+```
+
+La variable objetivo presenta un desbalance natural de 1:4, concretamente 8.152 pólizas no registran ningún registro durante el año en curso, frente a 1.845 que sí lo hacen. Este desbalance es inherente al negocio asegurador, ya que la mayoría de los asegurados no siniestra en un año dado.
+
+**Factorización de las variables categóricas y binarias**
+
+```{r message=FALSE, warning=FALSE}
+
+# Factorizamos las variables categóricas y binarias como hicimos en data_cat en la fase de EDA pero sobre las mismas columnas, no creamos nuevas
+data_clean <- data_clean %>%
+  mutate(
+    Distribution_channel = factor(Distribution_channel, levels = c(0,1),
+                                  labels = c("Agente", "Broker")),
+    Payment = factor(Payment, levels = c(0,1),
+                     labels = c("Anual", "Semestral")),
+    Type_risk = factor(Type_risk, levels = c(1,2,3,4),
+                      labels = c("Moto", "Furgoneta", "Turismo", "V.Agrícola")),
+    Area = factor(Area, levels = c(0,1),
+                  labels = c("Rural", "Urbana")),
+    Second_driver = factor(Second_driver, levels = c(0,1),
+                           labels = c("Un conductor", "Varios")),
+    Type_fuel = factor(Type_fuel, levels = c("P","D"),
+                       labels = c("Gasolina", "Diesel")),
+    Claim = factor(Claim, levels = c(0,1),
+                   labels = c("Sin siniestro", "Con siniestro"))
+  )
+
+# Verificamos
+glimpse(data_clean %>% select(Distribution_channel, Payment, Type_risk, 
+                              Area, Second_driver, Type_fuel, Claim))
+```
+
+**Eliminación variables no necesarias**
+
+El juego de datos necesario para el modelado no requiere de las 35 variables que contiene (30 variables originales y 5 derivadas), por lo que se procede a suprimir algunas variables para dejarlo preparado para el modelado:
+
+```{r message=FALSE, warning=FALSE}
+# Eliminamos variables no necesarias para el modelado
+data_model <- data_clean %>%
+  select(-ID,
+         -Date_start_contract,
+         -Date_last_renewal,
+         -Date_next_renewal,
+         -Date_birth,
+         -Date_driving_licence,
+         -Lapse,
+         -Date_lapse,
+         -N_claims_year,
+         -Cost_claims_year,
+         -Year_matriculation,
+         -N_doors,
+         -Length
+         )    
+
+# Verificamos el resultado
+glimpse(data_model)
+```
+
+El juego de datos queda reducido a 23 columnas y 9.997 registros. Se detalla a continuación la justificación de eliminación de cada variable:
+
+- `ID`: identificador interno sin valor analítico ni predictivo.
+- `Date_start_contract`, `Date_last_renewal`,`Date_next_renewal`, `Date_birth`, `Date_driving_licence`: sustituidas por las variables derivadas por `Policy_age`, `Age_driver`, `Years_licence` y `Vehicle_age` , que expresan la misma información en formato numérico interpretable por los algoritmos.
+- `Year_matriculation` : sustituida por `Vehicle_age` .
+- `Date_lapse`: excluida en la fase de limpieza por las inconsistencias detectadas.
+- `N_claims_year`: sustituida por la variable objetivo.
+- `Cost_claims_year`: La información que proporciona este atributo queda recogido indirectamente en `Claim` y `N_claims_history`.
+- `Lapse`: la información que pudiese aportar queda recogido en el historial de siniestralidad.
+- `N_doors`: Variable casi constante, no aporta capacidad discriminante al análisis, confirmado por su ausencia de correlación con el resto de variables.
+- `Length`: Incluir esta variable en el PCA obligaría a eliminar todas las observaciones donde hay valores nulos, siendo cerca del 9% de la información. Además, dado que esta variable presenta una correlación de 0.83 y 0.64 con `Weight` y con `Cylinder_capacity`, su información queda recogida en estas variables (que no contienen registros nulos) sin pérdida relevante.
+
+**Estandarización de variables**
+
+Antes de proceder a aplicar una reducción de dimensionalidad, es necesario estandarizar las variables numéricas mediante una transformación z-score (media = 0, desviación típica = 1). Dado que PCA se basa en la maximización de la varianza, las variables con magnitudes numéricas mayores dominarían injustamente los componentes.
+
+A diferencia de la normalización min-max usada en otras ocasiones en las que se ha procedido a un clustering directo, para PCA se utiliza z-score porque esta transformación centra los datos en 0 (requisito matemático para que la descomposición en componentes principales sea correcta) y garantiza la equivalencia matemática entre PCA y SVD que se demostrará posteriormente.
+
+```{r message=FALSE, warning=FALSE}
+# Seleccionamos solo variables numéricas y escalamos (Z-score)
+data_scaled <- data_model %>%
+  select(where(is.numeric)) %>%
+  scale()
+
+# Verificamos
+cat("Dimensiones:", nrow(data_scaled), "x", ncol(data_scaled), "\n")
+round(colMeans(data_scaled), 4)
+round(apply(data_scaled, 2, sd), 4)
+
+```
+
+## Reducción de dimensionalidad
+
+El objetivo de reducir la dimensionalidad es sintetizar la información en un número menor de variables no correlacionadas (componentes principales) preservando la mayor parte de la variabilidad original. En este estudio, se aplican dos técnicas complementarias.
+
+**PCA:** aborda el problema desde la perspectiva de la varianza: busca las direcciones del espacio de variables que maximizan la varianza de los datos proyectados, calculando los vectores y valores propios de la matriz de covarianza.
+
+Es decir, dado un dataset con n observaciones y p variables estandarizadas, PCA:
+
+1.  Calcula la **matriz de covarianza** de las variables
+2.  Obtiene los **vectores propios** (eigenvectors) y **valores propios** (eigenvalues) de esa matriz
+3.  Ordena los componentes de mayor a menor valor propio — el primer componente recoge la mayor varianza posible, el segundo la mayor varianza restante ortogonal al primero, y así sucesivamente
+
+Cada componente principal es una **combinación lineal** de las variables originales. Los **loadings** indican cuánto contribuye cada variable original a cada componente, permitiendo interpretar qué dimensión del negocio captura cada componente.
+
+En el contexto asegurador, esperamos que el PCA identifique dimensiones latentes como el "perfil del vehículo" (combinación de potencia, cilindrada y valor económico) o el "perfil de experiencia del conductor" (combinación de edad, años de carnet y antigüedad de póliza).
+
+**SVD:** es una factorización matricial general que descompone directamente la matriz de datos en tres matrices:
+
+$$X = U \cdot \Sigma \cdot V^T$$
+
+Donde:
+
+- **U** (n × n): matriz de vectores singulares izquierdos — representa las observaciones en el nuevo espacio
+- **Σ** (n × p): matriz diagonal de valores singulares — cada valor singular σᵢ indica la importancia de cada dimensión
+- **V\^T** (p × p): matriz de vectores singulares derechos transpuesta — representa las variables originales en el nuevo espacio
+
+A diferencia de PCA, SVD no requiere calcular explícitamente la matriz de covarianza (trabaja directamente sobre la matriz de datos). Esto lo hace numéricamente más estable, especialmente con datasets de alta dimensionalidad.
+
+**Ambas técnicas producen resultados equivalentes** cuando se aplican sobre la misma matriz estandarizada: los vectores propios de PCA coinciden con las columnas V en SVD, y la varianza explicada por cada componente puede derivarse de los valores singulares mediante σ²/(n-1). De hecho, la función `prcomp()` de R implementa PCA internamente mediante SVD aprovechando su mayor estabilidad numérica.
+
+### PCA
+
+```{r message=FALSE, warning=FALSE}
+
+# Aplicamos PCA
+pca_result <- prcomp(data_scaled, scale. = FALSE)
+
+# Valores propios
+ev <- get_eig(pca_result)
+print(ev)
+
+# Scree plot
+fviz_eig(pca_result, 
+         addlabels = TRUE,
+         ylim = c(0, 50),
+         main = "Varianza explicada por componente (Scree Plot)")
+
+```
+
+Aplicando el criterio Kaiser, se retienen los componentes con un valor propio \> 1, que corresponden a los 6 primeros componentes principales. Estos componentes explican conjuntamente el 79,87% de la varianza total. Con el Scree plot se confirma esta decisión mostrando un codo claro entre PC6 y PC7, punto a partir del cual la varianza explicada por cada componente adicional cae por debajo del 6% y decrece de forma gradual sin aportar información relevante.
+
+Continuamos con el análisis de los componentes principales:
+
+El objetivo es analizar la estructura interna de cada uno mediante los **loadings** (la contribución de cada variable a cada componente principal). Estos loadings toman valores entre -1 y 1: valores cercanos a 1 o -1 indican alta contribución a ese componente, mientras que valores cercanos a cero indican que prácticamente no participan. El signo indica la dirección de la relación (variables con el mismo signo en un componente están correlacionadas positivamente entre sí).
+
+Para facilitar la interpretación visual, representamos las contribuciones mediante un corrplot donde el tamaño y la intensidad del color de cada círculo es proporcional a la contribución de cada variable al componente en cuestión.
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8, out.width="100%"}
+var <- get_pca_var(pca_result)
+
+# Loadings de los 6 componentes retenidos
+round(var$coord[, 1:6], 3)
+
+# Visualizamos
+corrplot(var$contrib[, 1:6], 
+         is.cor = FALSE,
+         title = "Contribución de variables a los 6 componentes",
+         mar = c(0,0,1,0))
+```
+
+El gráfico muestra que el componente 1 está construido casi exclusivamente por las variables físicas del vehículo (potencia, cilindrada, valor y peso), lo que permite interpretarlo como la dimensión de **"prestaciones del vehículo"**.
+
+Los componentes 2, 3 y 4 distribuyen la información del perfil del cliente entre antigüedad (`Seniority`), actividad en cartera (`Policies_in_force`, `Max_policies`) y duración de la relación (`Policy_age`). Finalmente, los componentes 5 y 6 capturan la dimensión de siniestralidad histórica, con `R_Claims_history`y `Vehicle_age` como variables protagonistas.
+
+Esta estructura muestra las dos grandes dimensiones de riesgo en la cartera: el perfil del vehículo y el perfil del cliente.
+
+Se procede a representar simultáneamente las variables originales en el espacio definido por los dos primeros componentes principales.
+
+```{r message=FALSE, warning=FALSE, fig.width=12, fig.height=8, out.width="100%"}
+
+# Biplot de variables — PC1 y PC2
+fviz_pca_var(pca_result,
+             col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,
+             title = "Biplot de variables — PC1 vs PC2")
+
+
+```
+
+El biplot nos revela dos grupos de variables separados en el espacio de componentes. A la izquierda, el bloque de características físicas del vehículo con flechas en la misma dirección con alta contribución (color naranja-rojo), confirmando su dominio sobre PC1.
+
+En la parte inferior, se observa el bloque del perfil del cliente que define principalmente el PC2, con flechas orientadas hacia abajo, scores negativos, es decir, clientes más veteranos y con mayor historial.
+
+Finalmente, se procede a **evaluar la calidad de representación** midiendo la proporción de la información que cada variable original recoge en los componentes retenidos. Esto se lleva a cabo mediante el estadístico **cos2,** que toma valores entre 0 y 1.
+
+- **cos2 cercano a 1**: la variable queda bien representada en los 6 componentes retenidos — se pierde poca información
+- **cos2 cercano a 0**: parte significativa de la información de esa variable se pierde al reducir la dimensionalidad.
+
+Un **cos2** bajo en una variable puede indicar que su información está distribuida en componentes que no hemos retenido, o que la variable tiene un comportamiento poco lineal respecto al resto.
+
+```{r message=FALSE, warning=FALSE}
+# Calidad de representación (cos2)
+fviz_cos2(pca_result, 
+          choice = "var", 
+          axes = 1:6,
+          title = "Calidad de representación (cos2) — 6 componentes")
+```
+
+Los resultados confirman que los 6 componentes retenidos representan adecuadamente la mayoría de las variables. `Age_driver` y `Years_licence` presentan los valores más altos, indicando que la experiencia del conductor queda perfectamente capturada. Adicionalmente, se confirma que el bloque físico del vehículo presenta valores elevados.
+
+La única excepción notable es `Max_products`que queda escasamente representada en los 6 componentes, apenas participa en ningún componente de forma destacada como se observó antes en el corrplot de contribuciones, lo que sugiere que su información es en gran medida independiente del resto de variables o que su variabilidad es demasiado reducida para ser capturada por el PCA.
+
+### SVD
+
+Como se explicó en la introducción teórica, SVD descompone la matriz de datos estandarizada en el producto de tres matrices. $$X = U \cdot \Sigma \cdot V^T$$ A diferencia de `prcomp()`que calcula PCA de forma implícita mediante SVD internamente, aquí se aplica `svd()`de forma explícita sobre la misma matriz estandarizada, permitiendo así verificar empíricamente la equivalencia teórica entre ambos métodos.
+
+La comparación se realizará a dos niveles:
+
+- Valores singulares vs valores propios: Los valores singulares $\sigma_i$ deben relacionarse con los eigenvalues $\lambda_i$ del PCA mediante $\lambda_i = \frac{\sigma_i^2}{n-1}$
+- Vectores singulares vs loadings: Las columnas de la matriz V obtenida por SVD deben coincidir con los loadings de `prcomp()`, salvo posibles diferencias de signo que no afectan a la interpretación.
+
+```{r message=FALSE, warning=FALSE}
+# Aplicamos SVD sobre la misma matriz estandarizada
+svd_result <- svd(data_scaled)
+
+# Extraemos los componentes
+# Vectores singulares izquierdos:
+U <- svd_result$u 
+
+# Valores singulares:
+Sigma <- svd_result$d  
+
+# Vectores singulares derechos:
+V <- svd_result$v      
+
+# Comparamos valores singulares con eigenvalues del PCA
+n <- nrow(data_scaled)
+
+eigenvalues_svd <- Sigma^2 / (n - 1)
+eigenvalues_pca <- pca_result$sdev^2
+
+comparacion <- data.frame(
+  Componente = paste0("PC", 1:15),
+  Eigenvalue_PCA = round(eigenvalues_pca, 6),
+  Eigenvalue_SVD = round(eigenvalues_svd, 6),
+  Diferencia = round(abs(eigenvalues_pca - eigenvalues_svd), 8)
+)
+print(comparacion)
+
+# Comparamos loadings — V de SVD vs rotation de PCA
+# Añadimos nombres de variables para facilitar la lectura
+rownames(V) <- colnames(data_scaled)
+
+cat("Loadings PCA (primeros 6 componentes):\n")
+round(pca_result$rotation[, 1:6], 3)
+
+cat("\nVectores V de SVD (primeros 6 componentes):\n")
+round(V[, 1:6], 3)
+
+# Diferencia absoluta entre ambos (ignorando diferencias de signo)
+diferencia_loadings <- abs(abs(pca_result$rotation[, 1:6]) - abs(V[, 1:6]))
+cat("\nDiferencia absoluta entre loadings:\n")
+round(diferencia_loadings, 6)
+```
+
+Los resultados confirman la equivalencia matemática entre PCA y SVD de forma empírica sobre los datos reales de la cartera aseguradora.
+
+**Eigenvalues**: La diferencia entre los valores propios obtenidos por `prcomp()` y los derivados de SVD mediante $\frac{\sigma_i^2}{n-1}$ es exactamente 0 en los 15 componentes (confirmando la relación teórica entre ambas descomposiciones).
+
+**Loadings**: Los vectores de la matriz V obtenidos por `svd()`son idénticos a los vectores de rotación de `prcomp()` en todos los componentes y variables.
+
+Al aplicar ambos métodos de forma explícita sobre la misma matriz estandarizada obtenemos inevitablemente los mismos resultados, verificando así tanto la implementación como la teoría subyacente.
+
+Para el modelado posterior se utilizarán los scores de los 6 componentes principales obtenidos por PCA como input para los algoritmos de clustering, aprovechando la reducción de dimensionalidad conseguida y la eliminación de la multicolinealidad entre las variables físicas del vehículo.
+
+```{r message=FALSE, warning=FALSE}
+# Guardamos los objetos preparados para el siguiente notebook
+save(data_model, data_scaled, pca_result, file = "data/prepared_model.RData")
+```
+
+## Interpretación de los resultados
+
+El análisis realizado sobre la cartera de seguros de vehículos de motor ha permitido extraer las siguientes conclusiones con implicaciones directas para la gestión del riesgo de la aseguradora.
+
+**La cartera está dominada por un perfil muy definido:** turismo de gama media en zona rural con un único conductor, de pago anual y de combustible diésel. Este perfil mayoritario convive con segmentos minoritarios pero analíticamente relevantes: motocicletas de pequeña cilindrada, furgonetas con dos submercados claramente diferenciados y vehículos agrícolas de alta variabilidad.
+
+El PCA ha confirmado que las variables físicas del vehículo forman una dimensión compacta y altamente correlacionada (PC1, 23,7% de varianza) mientras que el perfil del cliente se distribuye en dimensiones separadas (PC2 a PC4).
+
+Esta independencia sugiere que el pricing actual, que probablemente pondera principalmente las características del vehículo, podría enriquecerse incorporando el perfil del cliente como factor de tarificación complementario.
+
+Los componentes PC5 y PC6 capturan la frecuencia histórica de siniestros combinada con la antigüedad del vehículo, identificando un subconjunto de pólizas con ratios muy por encima de la media. Estos perfiles de cliente sistemáticamente siniestrado representan un riesgo concentrado que merece atención especial en las siguientes fases del estudio.
+
+Con un 81,5% de pólizas sin siniestro, cualquier modelo que no tenga en cuenta este desbalance tenderá a predecir siempre la clase mayoritaria, obteniendo una precisión aparentemente alta pero sin capacidad real de detectar siniestros. La sensibilidad será la métrica clave en este caso.
+
+Finalmente, los 6 componentes retenidos explican el 79,87% de la varianza con una calidad de representación superior a 0.75 en 14 de las 15 variables. La única excepción es `Max_products`, variable de escasa variabilidad que no aporta información relevante, podría excluirse en análisis futuros, tal como se mencionó previamente.
+
+------------------------------------------------------------------------
+
+# Notas de proceso
+
+- Los 6 componentes del PCA se usarán como input para el clustering, mientras que en la clasificación supervisada del siguiente notebook se trabajará con el dataset completo sin reducir. La razón es que el clustering (basado en distancias) es sensible a la dimensionalidad y a la multicolinealidad, mientras que un modelo como Random Forest maneja esto internamente al trabajar con subconjuntos aleatorios de variables en cada árbol. Por lo que aplicar PCA ahí sería innecesario, y en algunos casos hasta contraproducente porque dificulta la interpretabilidad de qué variable original pesa en cada predicción.
+- Al cruzar `Lapse` con `Date_lapse` se encontraron 1.429 registros (14,3% de la muestra) con `Lapse = 0` pero con fecha de baja registrada (una inconsistencia que no se pudo explicar con certeza sin acceso al sistema original de la aseguradora). Se descartó la variable `Date_lapse` del análisis por esa proporción demasiado alta de casos dudosos.
+- La fecha de referencia para calcular antigüedad y edad (31/12/2018) se fijó en función del periodo de observación del propio dataset, no la fecha actual, ya que en caso contrario todas las antigüedades saldrían infladas varios años.
+
+# Recursos
+
+------------------------------------------------------------------------
+
+**Dataset y paper principal**
+
+- Segura-Gisbert, J., Lledó, J., & Pavía, J. M. (2024). Dataset of an actual motor vehicle insurance portfolio. *European Actuarial Journal*. <https://doi.org/10.1007/s13385-024-00398-0>
+
+- Mendeley Data. (2024). Motor vehicle insurance data. <https://doi.org/10.17632/5cxyb5fp4f.2>
+
+**Recursos sobre PCA y SVD**
+
+- Karda, V. (2023). *PCA vs SVD: Simplified*. Medium. [https://medium.com/\@notsokarda/pca-vs-svd-simplified-32c5c753998](https://medium.com/@notsokarda/pca-vs-svd-simplified-32c5c753998){.uri}
+
+- Intellectum Unisabana. *Análisis de Componentes Principales*. <https://intellectum.unisabana.edu.co/server/api/core/bitstreams/a58569d5-7cbe-4a52-86c2-4fc29d9ab885/content>
+
+**Paquetes R utilizados**
+
+- Kassambara, A., & Mundt, F. (2020). *factoextra*. <https://CRAN.R-project.org/package=factoextra>
+- Grolemund, G., & Wickham, H. (2011). *lubridate*. <https://CRAN.R-project.org/package=lubridate>
+- Kassambara, A. (2023). *ggcorrplot*. <https://CRAN.R-project.org/package=ggcorrplot>
+- Schloerke, B. et al. (2021). *GGally*. <https://CRAN.R-project.org/package=GGally>
+- Wei, T., & Simko, V. (2021). *corrplot*. <https://CRAN.R-project.org/package=corrplot>
+- Pedersen, T. L. (2022). *patchwork*. <https://CRAN.R-project.org/package=patchwork>

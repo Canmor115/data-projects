@@ -1,0 +1,1061 @@
+---
+title: 'Predicción de siniestralidad y segmentación de perfiles de riesgo en seguros de vehículos'
+subtitle: 'Parte 2: Segmentación y predicción de siniestralidad'
+author: "Autor: Camila Andrea Moreno Ortiz"
+date: "2026"
+output:
+  html_document:
+    highlight: tango
+    number_sections: yes
+    theme: cosmo
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Cargamos el entorno preparado en el primer notebook
+load("data/prepared_model.RData")
+```
+
+```{r message= FALSE, warning=FALSE}
+# IMPORTAMOS LIBRERÍAS
+if (!require('dplyr')) install.packages('dplyr')
+library(dplyr)
+if (!require('cluster')) install.packages('cluster') 
+library(cluster) 
+if (!require('dbscan')) install.packages('dbscan') 
+library(dbscan) 
+if (!require('ggplot2')) install.packages('ggplot2')
+library(ggplot2)
+if (!require('patchwork')) install.packages('patchwork')
+library('patchwork')
+if (!require('ggcorrplot')) install.packages('ggcorrplot')
+library('ggcorrplot')
+if (!require('GGally')) install.packages('GGally')
+library(GGally)
+if (!require('lubridate')) install.packages('lubridate')
+library(lubridate)
+if (!require('factoextra')) install.packages('factoextra')
+library(factoextra)
+if (!require('corrplot')) install.packages('corrplot')
+library(corrplot)
+
+if (!require('Kmedians')) install.packages('Kmedians')
+library(Kmedians)
+if (!require('flexclust')) install.packages('flexclust')
+library(flexclust)
+if (!require('caret')) install.packages('caret')
+library(caret)
+if (!require('rpart')) install.packages('rpart')
+library(rpart)
+if (!require('rpart.plot')) install.packages('rpart.plot')
+library(rpart.plot)
+if (!require('gmodels')) install.packages('gmodels')
+library(gmodels)
+if (!require('randomForest')) install.packages('randomForest')
+library(randomForest)
+
+
+```
+
+------------------------------------------------------------------------
+
+# Modelado analítico
+
+------------------------------------------------------------------------
+
+Con los datos preparados en la fase anterior, el estudio entra ahora en su etapa central: la aplicación de los modelos analíticos que permitirán dar respuesta a los dos objetivos planteados previamente.
+
+Recordemos que la cartera quedó reducida a 9.997 pólizas con 23 características tras el proceso de limpieza e ingeniería de variables, con la variable objetivo `Claim` que refleja un desbalance natural del 81,5% de pólizas sin siniestro frente al 18,5% con siniestro. El PCA aplicado sobre las 15 variables numéricas estandarizadas identificó 6 componentes principales que explican el 79,87% de la varianza total, representando las dos grandes dimensiones de riesgo de la cartera: las prestaciones del vehículo y el perfil del cliente.
+
+Esta fase se estructura en dos grandes bloques. En el primero, se abordará la segmentación no supervisada de la cartera mediante algoritmos de clustering, con el objetivo de identificar perfiles de riesgo homogéneos que sean interpretables y accionables desde el punto de vista actuarial. En el segundo bloque se aplicará una serie de técnicas de clasificación supervisada para predecir la ocurrencia de siniestros, evaluando la capacidad predictiva de los modelos sobre la clase minoritaria como métrica prioritaria.
+
+Los resultados de ambos bloques se conectarán al final del estudio para verificar si los segmentos identificados de forma no supervisada se corresponden con los factores predictivos del modelo supervisado, aportando una validación cruzada de las conclusiones.
+
+------------------------------------------------------------------------
+
+# Segmentación no supervisada de la cartera
+
+------------------------------------------------------------------------
+
+## k-means
+
+La segmentación de la cartera mediante técnicas de clustering persigue como objetivo concreto: identificar grupos de pólizas con un perfil de riesgo homogéneo que no sean visibles a simple vista en los datos brutos, y que puedan tener interpretados y utilizados por el equipo actuarial para enriquecer la política de tarificación.
+
+Para ello se aplicará en primer lugar el algoritmo k-means, uno de los métodos de clustering más extendidos en la industria por su eficiencia computacional y la interpretabilidad de sus resultados. K-means particiona el espacio de variables en k grupos minimizando la varianza intra-cluster, es decir, buscando que las observaciones dentro de cada grupo sean lo más similares posible entre sí y lo más distintas posible respecto del resto de grupos.
+
+Antes de aplicar el algoritmo es necesario determinar el número óptimo de clústers. Esta decisión se tomará sobre los 6 componentes principales obtenidos en la fase anterior, y no sobre las originales por dos motivos. En primer lugar, los componentes del PCA están descorrelacionados entre sí, lo que elimina el ruido que introduce la multicolinealidad entre variables como potencia, cilindrada y valor del vehículo a la hora de calcular distancias. En segundo lugar, trabajar en un espacio de 6 dimensiones en lugar de 15 hace que las distancias euclídeas sean más representativas y estables, reduciendo el efecto de la maldición de la dimensionalidad.
+
+Para determinar k se combinan dos criterios complementarios. El método del codo que evalúa la inercia total intra-cluster en función del número de grupos: a partir del punto donde la reducción de inercia se vuelve marginal, añadir más clusters no aporta una mejora sustancial. El índice de silhouette mide para cada observación qué tan bien encaja en su propio cluster en comparación con el cluster más cercano, tomando valores entre -1 y 1, donde valores próximos a 1 indican una asignación correcta y valores negativos indican observaciones mál clasificadas. Usar ambos criterios conjuntamente permite tomar una decisión más robusta que si se aplicase uno solo.
+
+```{r message=FALSE, warning=FALSE}
+# Extraemos los 6 scores del pca
+pca_scores <- pca_result$x[,1:6]
+
+# Método del codo
+# Fijamos semilla
+set.seed(20252)
+
+# Elbow method
+wss <- numeric(10)
+for (k in 1:10) {
+  wss[k] <- sum(kmeans(pca_scores, centers=k, nstart=25)$withinss)
+}
+# Visualizamos
+plot(1:10, wss, type="b", pch=19, frame = FALSE,
+     xlab="Número de clusters (k)",
+     ylab="Inercia intra-cluster (WSS)",
+     main="Método del codo")
+
+
+# Índice de Silhouette
+silhouettes <- numeric(10)
+distancias <- dist(pca_scores)
+
+for (k in 2:10) {
+  clusters <- kmeans(pca_scores, centers = k, nstart = 25)$cluster
+  sil <- silhouette(clusters, distancias)
+  silhouettes[k] <- mean(sil[, 3])
+}
+
+# Visualizamos
+plot(2:10, silhouettes[2:10], type = "b", pch = 19, frame = FALSE,
+     xlab = "Número de clusters (k)",
+     ylab = "Silhouette promedio",
+     main = "Índice de silhouette promedio")
+
+# Mostramos el vector final
+print(silhouettes) 
+
+```
+
+Los resultados obtenidos mediante los dos criterios de validación apuntan de forma consistente hacia k=3 como el número óptimo de clusters para este dataset.
+
+El método del codo no presenta un punto de inflexión especialmente nítido, lo cual es habitual en carteras de seguros donde los perfiles de riesgo no forman grupos perfectamente delimitados en el espacio de variables. Sin embargo, se puede apreciar un cambio de pendiente a partir de k=3, punto en el que la reducción de inercia intra-cluster se vuelve progresivamente más marginal, indicandonos que si añadiésemos clusters adicionales, estos no estarían aportando una mejora sustancial en la compacidad de los grupos.
+
+El índice de silhouette promedio confirma esta decisión de forma más contundente. El valor máximo se alcanza en k=3 con un índice de 0.25 (calculado sobre los 6 componentes del PCA utilizados), tras el cual se produce una caída brusca en k=4 hasta 0.16 y una estabilización en torno a 0.18-0.19 para valores superiores. Aunque un valor de 0.25 es moderado, esto es esperable en datos de una cartera aseguradora real donde los perfiles de riesgo se solapan de forma natural, sin fronteras discretas entre grupos.
+
+Se selecciona por tanto k=3 como el número óptimo de clusters. Esta decisión realmente está respaldada estadísticamente por el silhouette y tiene además una interpretación actuarial coherente: tres segmentos permiten distinguir perfiles de riesgo bajo, medio y alto con suficiente granularidad para ser accionables en la política de tarificación, sin llegar a una fragmentación excesiva que dificultaría su interpretación y uso operativo.
+
+### k-means sobre los datos originales
+
+Con k=3 establecido, se procede a aplicar el algoritmo k-means sobre las variables cuantitativas y binarias de `data_model` sin ningún tipo de transformación previa. De las 22 variables disponibles, se trabaja con 19: las 15 numéricas y las 5 binarias codificadas como 0/1, que representan respectivamente `Area`, `Second_driver`, `Distribution_channel`, `Payment` y `Type_fuel`.
+
+Las dos variables excluidas son `Type_risk`, y `Claim`. La variable `Type_risk` es categórica con cuatro niveles y su incorporación mediante variables dummy otorgaría un peso desproporcionado al tipo de vehículo en el cálculo de distancias euclídeas. Su información queda recogida de forma indirecta a través de las variables físicas del vehículo (`Power`, `Cylinder_capacity`, `Weight` y `Value_vehicle`), que tal como confirmó el PCA en la fase anterior forman la dimensión más compacta y relevante de la cartera. `Claim` es la variable objetivo del bloque supervisado y nunca debe actuar como input en un modelo no supervisado para evitar contaminar la segmentación con la información que precisamente queremos predecir.
+
+El objetivo de aplicar k-means sobre los datos sin escalar es doble. Por un lado, permite observar el comportamiento del algoritmo cuando las variables mantienen sus unidades originales y, por tanto, aquellas con mayor magnitud numérica tienen más peso en el cálculo de distancias. Por otro lado, sirve como punto de comparación con el modelo sobre datos normalizados, permitiendo evaluar el impacto real de la escala sobre la calidad del agrupamiento.
+
+```{r message=FALSE, warning=FALSE}
+# Preparamos la matriz con variables numéricas y binarias
+vars_cluster <- data.frame(
+  #Numéricas
+  Seniority = data_model$Seniority,
+  Policies_in_force = data_model$Policies_in_force,
+  Max_policies = data_model$Max_policies,
+  Max_products = data_model$Max_products,
+  Premium = data_model$Premium,
+  N_claims_history = data_model$N_claims_history,
+  R_Claims_history = data_model$R_Claims_history,
+  Power = data_model$Power,
+  Cylinder_capacity = data_model$Cylinder_capacity,
+  Value_vehicle = data_model$Value_vehicle,
+  Weight = data_model$Weight,
+  Age_driver = data_model$Age_driver,
+  Years_licence = data_model$Years_licence,
+  Policy_age = data_model$Policy_age,
+  Vehicle_age = data_model$Vehicle_age,
+  
+  # Categóricas binarizadas
+  Area = ifelse(data_model$Area == "Urbana", 1, 0),
+  Second_driver = ifelse(data_model$Second_driver == "Varios", 1, 0),
+  Distribution_channel = ifelse(data_model$Distribution_channel == "Broker", 1, 0),
+  Payment = ifelse(data_model$Payment == "Semestral", 1, 0),
+  Type_fuel = ifelse(data_model$Type_fuel == "Diesel", 1, 0)
+)
+# Verificamos dimensiones y ausencia de NAs
+cat("Dimensiones:", nrow(vars_cluster), "x", ncol(vars_cluster), "\n")
+cat("NAs:", sum(is.na(vars_cluster)), "\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+# K-means con k=3 sobre datos originales
+set.seed(20252)
+km_original <- kmeans(vars_cluster, centers = 3, nstart = 25)
+
+# Tamaño de cada cluster
+km_original$size
+
+# Inercia intra-cluster por cluster y total
+km_original$withinss
+km_original$tot.withinss
+
+# Ratio between/total
+km_original$betweenss / km_original$totss
+```
+
+```{r message=FALSE, warning=FALSE}
+# Visualizamos 
+# Añadimos la asignación de cluster al dataset original
+data_model$cluster_original <- as.factor(km_original$cluster)
+
+# Visualización de los clusters en el espacio PCA
+fviz_cluster(km_original, 
+             data = vars_cluster,
+             geom = "point",
+             ellipse.type = "convex",
+             palette = c("#2C7BB6", "#D7191C", "#1A9641"),
+             alpha = 0.4,
+             main = "K-means sobre datos originales (k=3)") +
+  theme_minimal()
+
+# Caracterización de los clusters con las variables originales
+aggregate(vars_cluster, by = list(cluster = km_original$cluster), FUN = mean)
+```
+
+Los resultados del k-means sobre datos sin escalar revelan una segementación dominada por las características físicas del vehículo. Los tres clusters identificados presentan perfiles muy diferenciados en términos de potencia, cilindrada, valor de mercado y peso, mientras que el perfil del conductor es prácticamente idéntico en los tres grupos, con una edad media en torno a los 49-50 años y una experiencia de conducción de 26-28 años.
+
+El cluster 3, el más reducido ocn 663 pólizas, agrupa los vehículos de alta gama con una potencia media de 146 CV, una cilindrada de 2.510 cc y un valor de mercado de 39.824€. Este segmento presenta la prima más elevada (413€) y el mayor ratio de siniestralidad histórica (0.54), con un 82% de vehículos diésel. El cluster 1, con 4.805 pólizas, representa la gama media con una potencia de 107 CV, cilindrada de 1.804 cc y valor de 21.981€, con una prima intermedia de 349€ y un ratio de siniestralidad de 0.46. El cluster 2, con 4.529 pólizas, recoge los vehículos de menor prestaciones con una potencia de 70 CV, cilindrada de 1.288 cc y valor de 11.490€, la prima más baja (269€), el menor ratio de siniestralidad (0.36) y solo un 40% de vehículos diésel, lo que apunta a una presencia significativa de motocicletas y vehículos de pequeña cilindrada de gasolina.
+
+El ratio between/total de 0.73 indica que el 73% de la varianza total queda explicada por la separación entre clusters, un resultado aparentemente satisfactorio. Sin embargo, la ausencia de diferenciación en el perfil del conductor entre los tres grupos es una señal clara de que el algoritmo está siendo dominado por las variables de mayor magnitud numérica, especialmennte `Value_vehicle`, `Cylinder_capacity` y `Weight`, cuyas escalas eclipsan la contribución del resto de variables en el cálculo de distancias euclídeas. Este efecto escala es precisamente el que la normalización corregirá en el siguiente paso.
+
+### k-means sobre los datos normalizados
+
+Para corregir el efecto escala detectado en el modelo anterior, se aplica k-means sobre las mismas 20 variables pero estandarizadas mediante z-score, de forma que todas contribuyan en igualdad de condiciones al cálculo de distancias. Las variables numéricas se toman directamente de `data_scaled`, y las 5 binarias se incorporan tal como se construyeron anteriormente, ya que al tomar valores 0/1 su escala es homogénea y la estandarización no altera su comportamiento de forma relevante.
+
+```{r message=FALSE, warning=FALSE}
+# Preparamos la matriz normalizada
+vars_cluster_norm <- data.frame(
+  as.data.frame(data_scaled),
+  Area = ifelse(data_model$Area == "Urbana", 1, 0),
+  Second_driver = ifelse(data_model$Second_driver == "Varios", 1, 0),
+  Distribution_channel = ifelse(data_model$Distribution_channel == "Broker", 1, 0),
+  Payment = ifelse(data_model$Payment == "Semestral", 1, 0),
+  Type_fuel = ifelse(data_model$Type_fuel == "Diesel", 1, 0)
+)
+
+# Verificamos
+cat("Dimensiones:", nrow(vars_cluster_norm), "x", ncol(vars_cluster_norm), "\n")
+cat("NAs:", sum(is.na(vars_cluster_norm)), "\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+# K-means con k=3 sobre datos normalizados
+set.seed(20252)
+km_norm <- kmeans(vars_cluster_norm, centers = 3, nstart = 25)
+
+# Tamaño de cada cluster
+km_norm$size
+
+# Inercia y ratio between/total
+km_norm$withinss
+km_norm$tot.withinss
+km_norm$betweenss / km_norm$totss
+
+# Visualización
+fviz_cluster(km_norm,
+             data = vars_cluster_norm,
+             geom = "point",
+             ellipse.type = "convex",
+             palette = c("#2C7BB6", "#D7191C", "#1A9641"),
+             alpha = 0.4,
+             main = "K-means sobre datos normalizados (k=3)") +
+  theme_minimal()
+
+# Caracterización
+aggregate(vars_cluster, by = list(cluster = km_norm$cluster), FUN = mean)
+```
+
+Antes de continuar, es necesario calcular métricas para poder comparar la calidad. También es necesario cruzar los clusters de cada uno con las variables originales `Type_risk` y `Claim` para poder interpretar:
+
+```{r message=FALSE, warning=FALSE}
+# SILHOUETTE para ambos kmeans
+dist_original <- dist(vars_cluster)
+dist_norm <- dist(vars_cluster_norm)
+
+sil_original <- silhouette(km_original$cluster, dist_original)
+sil_norm <- silhouette(km_norm$cluster, dist_norm)
+
+cat("Silhouette medio — datos originales:", mean(sil_original[, 3]), "\n")
+cat("Silhouette medio — datos normalizados:", mean(sil_norm[, 3]), "\n")
+
+# Visualización silhouette
+fviz_silhouette(sil_original, palette = c("#2C7BB6", "#D7191C", "#1A9641")) +
+  labs(title = "Silhouette — datos originales") +
+  theme_minimal()
+
+fviz_silhouette(sil_norm, palette = c("#2C7BB6", "#D7191C", "#1A9641")) +
+  labs(title = "Silhouette — datos normalizados") +
+  theme_minimal()
+
+# Con variables originales
+data_model$cluster_norm <- as.factor(km_norm$cluster)
+
+# Distribución de Type_risk por cluster
+table(data_model$cluster_norm, data_model$Type_risk)
+
+# Distribución de Claim por cluster
+table(data_model$cluster_norm, data_model$Claim)
+
+# Proporción de siniestros por cluster
+prop.table(table(data_model$cluster_norm, data_model$Claim), margin = 1)
+```
+
+```{r message=FALSE, warning=FALSE}
+# VISUALIZAMOS por cluster
+
+# Distribución de Type_risk por cluster
+ggplot(data_model, aes(x = cluster_norm, fill = Type_risk)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("#2C7BB6", "#D7191C", "#1A9641", "#FF7F00")) +
+  labs(title = "Composición por tipo de vehículo — K-means normalizado",
+       x = "Cluster", y = "Proporción", fill = "Tipo de vehículo") +
+  theme_minimal()
+
+# Proporción de siniestros por cluster
+ggplot(data_model, aes(x = cluster_norm, fill = Claim)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("#2C7BB6", "#D7191C")) +
+  labs(title = "Proporción de siniestros por cluster — K-means normalizado",
+       x = "Cluster", y = "Proporción", fill = "Siniestro") +
+  theme_minimal()
+```
+
+Los resultados del k-means sobre los datos normalizados ofrecen una segmentación cualitativamente distina a la obtenida con los datos originales. Al eliminar el efecto escala, el algoritmo ya no queda dominado por las variables de mayor magnitud numérica y es capaz de capturar patrones más ricos que combinan el perfil del vehículo con el perfil del cliente y su historial de siniestralidad.
+
+El cluster 1, formado por 959 polizas, está compuesto en un 80% por motocicletas y se caracteriza por vehículos de muy pequeña cilindrada (410 cc) y bajo valor de mercado (4.915€), primas reducidas (151€) y una siniestralidad histórica muy baja (0.17). Es el segmento con menor proporción de siniestros del año en curso, con un 7.8% frente al 18.5% global de la cartera, lo que lo convierte claramente en el perfil de menor riesgo del estudio.
+
+El cluster 2, con 2.374 pólizas, agrupa a los clientes más veteranos de la cartera, con una antigüedad media de 14 años, una edad entre 55 y con 33 años de experiencia de conducción. A pesar de conducir vehículos de gama media (98 CV, 19.829€), presentan el ratio de siniestralidad más elevado (0.49) y la mayor proporción de siniestros del año en curso (20.70%). Las pólizas de este grupo tienen además una antigüedad media de 8.4 años, lo que indica una relación consolidada con la aseguradora. Este perfil representa el segmento de mayor riesgo concentrado de la cartera y merece una atención especial en la política de tarificación de renovación.
+
+El cluster 3, mayoritario con 6.664 pólizas, recoge el perfil más habitual de la cartera: conductores de edad media (46 años, 23 años de carnet), el grupo más joven de los tres en términos relativos, con vehículos de gama media (101 CV, 19.848€), pólizas recientes (3.3 años) y una prima media de 343€. La proporción de siniestros (19.2%) es muy similar a la media global, confirmando que este segmento representa el riesgo estándar de la cartera.
+
+### Comparativa entre modelos
+
+La comparación entre ambos modelos muestra resultados aparentemente contradictorios que requieren una lectura cuidadosa. El modelo sobre datos originales obtiene un silhouette medio de 0.52, con los tres clusters bien definidos individualmente (0.54, 0.52 y 0.43). El modelo normalizado presenta un silhouette medio de 0.21, con el cluster 2 obteniendo un valor negativo de -0.02, lo que indica que una parte de sus observaciones no están asignadas y podrían encajar mejor en otro grupo.Este valor es inferior al 0.25 obtenido en la fase de selección de k, donde el silhouette se calculó sobre los 6 componentes del PCA. La diferencia es esperada: el modelo definitivo opera sobre las 20 variables originales normalizadas, un espacio de mayor dimensionalidad donde las distancias son menos compactas.
+
+Sin embargo, interpretar este resultado como una superioridad del modelo sin escalar sería un error metodológico. El silhouette elevado del modelo original refleja unicamente que las variables de mayor magnitud, especialmente `Value_vehicle`, `Cylinder_capacity` y `Weight`, forman grupos muy compactos en su propia escala. Esto no implica que la segmentación sea más informativa, sino que es más artificial: el algoritmo está midiendo distancias en un espacio deformado donde tres variables dominan sobre las diecisiete restantes.
+
+El modelo normalizado, a pesar de su menor silhouette, produce una segmentación con mayor valoración actuarial. Los tres clusters se diferencian por el tipo de vehículo, perfil del cliente, la antigüedad de la relación y la siniestralidad histórica, que son precisamente las dimensiones que el equipo necesita para diseñar estrategias de tarificación diferenciadas.
+
+Por estos motivos, se selecciona el modelo k-means sobre datos normalizados con k=3 como referencia para los ejercicios siguientes. Esta decisión prioriza la riqueza interpretativa y la coherencia con los objetivos del estudio sobre la métrica de cohesión geométrica, cuya comparabilidad entre espacios de variables con escalas distintas es limitada.
+
+## k-medians
+
+El algoritmo k-medians es una variante del k-means que sustituye la media aritmética por la mediana como centro de cada cluster. Esta diferencia, aparentemente menor, tiene implicaciones prácticas relevantes en el contexto asegurador. La mediana es un estadístico robusto frente a valores extremos, por lo que k-medians es menos sensible a la presencia de pólizas atípicas como vehículos de muy alto valor o clientes con ratios de siniestralidad extraordinariamente elevados. En una Cartera con las colas derechas que caracterizamos en la PRA1, esta propiedad puede producir clusters más estables y representativos del comportamiento típico de cada segmento.
+
+Se aplica k-medians con k=3 sobre los datos normalizados, el mismo espacio de variables seleccionado en el apartado anterior, para que la comparación entre ambos métodos sea directa y no esté contaminada por diferencias en el preprocesado. Se utiliza el paquete `Kmedians`, que implmenta el algoritmo mediante un enfoque EM minimizando la suma de errores absolutos en lugar de la suma de errores cuadráticos que minimiza k-means.
+
+Adicionalmente, y de forma complementaria, se aplicará también el método PAM (Partitioning Around Medoids) para enriquecer la comparativa. A diferencia de k-medians, PAM no calcula un centroide abstracto sino que selecciona como representante de cada cluster una observación real del dataset, lo que facilita la interpretación de los perfiles obtenidos.
+
+```{r message=FALSE, warning=FALSE}
+# K-medians con k=3 sobre datos normalizados
+set.seed(20252)
+km_medians <- Kmedians(as.matrix(vars_cluster_norm), 
+                       nclust = 3,
+                       ninit = 10,
+                       niter = 20,
+                       method = "Offline",
+                       par = FALSE)
+
+# Tamaño de cada cluster
+table(km_medians$bestresult$cluster)
+
+# Centroides (medianas)
+km_medians$bestresult$centers
+
+# Suma de errores (equivalente a inercia en k-medians)
+km_medians$bestresult$SE
+
+# Silhouette
+sil_medians <- silhouette(km_medians$bestresult$cluster, dist_norm)
+cat("Silhouette medio — k-medians:", mean(sil_medians[, 3]), "\n")
+
+# Caracterización con variables originales
+aggregate(vars_cluster, 
+          by = list(cluster = km_medians$bestresult$cluster), 
+          FUN = mean)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Tabla cruzada k-means vs k-medians
+table(km_means = km_norm$cluster, km_medians = km_medians$bestresult$cluster)
+
+# Distribución de Type_risk y Claim en k-medians
+data_model$cluster_medians <- as.factor(km_medians$bestresult$cluster)
+
+prop.table(table(data_model$cluster_medians, data_model$Claim), margin = 1)
+
+# Visualización silhouette k-medians
+fviz_silhouette(sil_medians, palette = c("#2C7BB6", "#D7191C", "#1A9641")) +
+  labs(title = "Silhouette — k-medians") +
+  theme_minimal()
+```
+
+Los resultados de k-medians identifican los mismos tres perfiles de riesgo que el k-means normalizado, confirmando la robustez de la estructura de segmentación. El cluster 3, formado por 875 pólizas, agrupa las motocicletas de pequeña cilindrada con una potencia media de 24 CV, un valor de mercado de 4.344€ y apenas un 1.6% de vehículos diésel, presentando la menor proporción de siniestros de los tres grupos con un 7.7%. El cluster 1, con 4.500 pólizas, recoge los clientes más veteranos de la cartera con una edad media de 58 años, 35 de experiencia de conducción y una antigüedad de póliza de 6 años, con una siniestralidad del 18%. El cluster 2, con 4.622 pólizas, agrupa los conductores más jóvenes con 39 años de edad media y pólizas recientes de 3.3 años, con la mayor proporción de siniestros del año en curso (20.9%).
+
+Sin embargo, la calidad de agrupamiento medida por el índice de silhouette es inferior a la de k-means normalizado, con un valor medio de 0.13 frente al 0.21 obtenido anteriormente. El cluster 1 obtiene un silhouette prácticamente nulo de 0.00, lo que indica que sus observaciones se encuentran en la fronteera entre grupos y no están bien diferenciadas del resto. Esta menor cohesión es esperable desde un punto de vista teórico: k-medians minimiza la suma de distancias absolutas en lugar de las cuadráticas, lo que lo hace más robusto frente a valores extremos pero produce fronteras entre clusters menos nítidas cuando los grupos no están claramente separados, como ocurre en una cartera aseguradora real.
+
+```{r message=FALSE, warning=FALSE}
+# Aplicamos PAM
+
+# PAM con k=3 sobre datos normalizados
+set.seed(20252)
+pam_result <- pam(vars_cluster_norm, k = 3)
+
+# Tamaño de cada cluster
+pam_result$clusinfo
+
+# Medoides — observaciones representativas de cada cluster
+pam_result$medoids
+
+# Silhouette
+sil_pam <- silhouette(pam_result$clustering, dist_norm)
+cat("Silhouette medio — PAM:", mean(sil_pam[, 3]), "\n")
+
+# Tabla cruzada con k-means
+table(km_means = km_norm$cluster, pam = pam_result$clustering)
+
+# Proporción de siniestros
+data_model$cluster_pam <- as.factor(pam_result$clustering)
+prop.table(table(data_model$cluster_pam, data_model$Claim), margin = 1)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Graficamos 
+# Silhouette PAM
+fviz_silhouette(sil_pam, palette = c("#2C7BB6", "#D7191C", "#1A9641")) +
+  labs(title = "Silhouette — PAM") +
+  theme_minimal()
+
+# Caracterización con variables originales
+aggregate(vars_cluster, 
+          by = list(cluster = pam_result$clustering), 
+          FUN = mean)
+```
+
+Los resultados de PAM confirman la misma estructura de tres segmentos identificada con los modelos anteriores. El cluster 3 (807 pólizas) agrupa las motocicletas con una potencia media de 21 CV, cilindrada de 270 cc y valor de 3.919€, con la menor proporción de siniestros (7.3%) y prácticamente sin vehículos diésel (1.4%). El cluster 2 (2.718 pólizas) recoge los clientes más veteranos con 12.7 años de antigüedad, 50 años de edad y 30 años de carnet, presentando la mayor proporción de siniestros de los tres grupos con un 25.7%, el valor más alto registrado entre todos los modelos aplicados hasta ahora. El cluster 1 (6472 pólizas) representa el perfil estándar de la cartera con conductores de 47 años, vehículos de gama media y una siniestralidad del 16.8%.
+
+La ventaja diferencial de PAM respecto a k-means y k-medians reside en la naturaleza de sus centros. Al seleccionar como representante de cada cluster una observación real del dataset, los medoides obtenidos corresponden a pólizas concretas de la cartera que encarnan el perfil típico de cada segmento. Esto facilita enormemente la comunicación de los resultados al equipo actuarial, que puede analizar directamente los atributos de esas pólizas reales en lugar de trabajar con centroides abstractos.
+
+Sin embargo, la calidad del agrupamiento presenta limitaciones similares a las observadas en k-medians. El cluster 2 obtiene un silhouette negativo de -0.06, lo que indica que una parte de sus observaciones estarían mejor asignadas a otro grupo. Este resultado es consistente con lo observado en los modelos anteriores y confirma que el segmento de clientes veteranos presenta fronteras naturalmente difusas con el resto de la cartera, independientemente del algoritmo utilizado.
+
+### Comparativa entre los tres modelos
+
+Los tres algoritmos aplicados coinciden en identificar la misma estructura de segmentación: un segmento de motocicletas de bajo riesgo, un segmento de clientes veteranos de riesgo elevado y un segmento mayoritario de riesgo estándar. Esta consistencia entre métodos con fundamentos matemáticos distintos aporta robustez a la segmentación y confirma que los tres perfiles identificados reflejan patrones reales en los datos de la cartera y no son un artefacto de un algoritmo concreto.
+
+| Modelo    | Silhouette medio | Seg. motos | Seg. Veteranos | Seg. estándar |
+|-----------|------------------|------------|----------------|---------------|
+| K-means   | 0.21             | 0.30       | -0.02          | 0.17          |
+| K-medians | 0.13             | 0.19       | 0.00           | 0.24          |
+| PAM       | 0.19             | 0.20       | -0.06          | 0.30          |
+
+En términos de calidad de agrupamiento, k-means obtiene el silhouette medio más alto y produce los clusters más compactos geométricamente. K-medians y PAM presentan valores inferiores, aunque aportan mayor robustez frente a las pólizas atípicas de la cartera al basarse en estadísticos resistentes a valores extremos. El segmento de clientes veteranos es el más problemático en todos los modelos, con silhouettes bajos o negativos que reflejan la naturaleza difusa de sus fronteras con el resto de la cartera, lo cual es coherente con una cartera aseguradora donde los perfiles de riesgo se solapan de forma natural sin fronteras discretas entre grupos.
+
+Desde el punto de vista actuarial, los tres modelos son equivalentes en su capacidad para identificar los segmentos de riesgo relevantes de la cartera. La elección entre ellos depende del uso que se quiera dar a los resultados: k-means es preferible cuando se busca una máxima cohesión geométrica de los grupos, k-medians cuando se quiere minimizar el efecto de pólizas atípicas sobre los centroides, y PAM cuando la interpretabilidad de los centros es prioritaria al estar representados por pólizas reales de la cartera.
+
+Se mantiene el modelo k-means normalizado como referencia para los siguientes apartados por su mayor cohesión interna y la mayor nitidez de sus fronteras entre clusters.
+
+## k-means con distancia Manhattan
+
+El algoritmo k-means ha utilizado la distancia euclidiana como métrica para calcular la similitud entre observaciones, una elección que minimiza la suma de distancias cuadráticas y produce clusters compactos geométricamente pero que es sensible a la presencia de valores extremos. En este apartado se aplica el mismo principio de minimización de distancias intra-cluster con k=3 sobre los datos normalizados pero sustituyendo la distancia euclidiana por la distancia Manhattan, también conocida como distancia de ciudad o norma L1.
+
+La distancia Manhattan calcula la suma de las diferencias absolutas entre coordenadas en lugar de la raíz de la suma de sus cuadrados. Esta diferencia tiene una implicación práctica relevante en el contexto asegurador: al no elevar al cuadrado las diferencias, las observaciones con valores extremos en variables como `Value_vehicle` o `R_Claims_history` tienen un peso proporcionalmente menor en el cálculo de distancias, lo que puede producir una segmentación más robusta frente a las pólizas atípicas de la cartera.
+
+Es importante señalar que cuando se sustituye la distancia euclidiana por la Manhattan, el centroide que minimiza la función objetivo deja de ser la media aritmética y pasa a ser la mediana. Esta es una consecuencia matemática directa de la norma L1, no una elección arbitraria: minimizar la suma de distancias absolutas es equivalente a encontrar la mediana en cada dimensión. Por tanto, el modelo aplicado no mezcla dos algoritmos distintos sino que aplica el mismo principio de k-centroides con una métrica diferente, que es precisamente lo que este ejercicio propone. La implementación se realiza mediante el paquete flexclust y el índice de silhouette se calcula también con distancia Manhattan para que la evaluación de la calidad sea coherente con la métrica utilizada por el algoritmo.
+
+```{r message=FALSE, warning=FALSE}
+# K-means con distancia Manhattan sobre datos normalizados
+set.seed(20252)
+km_manhattan <- kcca(vars_cluster_norm, 
+                     k = 3, 
+                     family = kccaFamily("kmedians"),
+                     control = list(initcent = "kmeanspp"))
+
+# Tamaño de cada cluster
+table(km_manhattan@cluster)
+
+# Centroides
+km_manhattan@centers
+
+# Silhouette con distancia Manhattan
+dist_manhattan <- dist(vars_cluster_norm, method = "manhattan")
+sil_manhattan <- silhouette(km_manhattan@cluster, dist_manhattan)
+cat("Silhouette medio — Manhattan:", mean(sil_manhattan[, 3]), "\n")
+
+# Visualización silhouette
+fviz_silhouette(sil_manhattan, palette = c("#2C7BB6", "#D7191C", "#1A9641")) +
+  labs(title = "Silhouette — K-means Manhattan") +
+  theme_minimal()
+
+# Visualización clusters
+fviz_cluster(list(data = vars_cluster_norm, cluster = km_manhattan@cluster),
+             geom = "point",
+             ellipse.type = "convex",
+             palette = c("#2C7BB6", "#D7191C", "#1A9641"),
+             alpha = 0.4,
+             main = "K-means Manhattan sobre datos normalizados (k=3)") +
+  theme_minimal()
+
+# Caracterización con variables originales
+aggregate(vars_cluster,
+          by = list(cluster = km_manhattan@cluster),
+          FUN = mean)
+
+# Proporción de siniestros por cluster
+data_model$cluster_manhattan <- as.factor(km_manhattan@cluster)
+prop.table(table(data_model$cluster_manhattan, data_model$Claim), margin = 1)
+
+# Tablas cruzadas con modelos anteriores
+table(km_means = km_norm$cluster, manhattan = km_manhattan@cluster)
+table(km_medians = km_medians$bestresult$cluster, manhattan = km_manhattan@cluster)
+```
+
+Los resultados del k-means con distancia Manhattan identifican los mismos tres perfiles de riesgo que los modelos anteriores, confirmando la robustez de la estructura de segmentación de la cartera. El cluster 1, con 4.117 pólizas, agrupa el perfil estándar con vehículos de gama media (108 CV, 22.082€), conductores de 43 años y una siniestralidad del 19.8%. El cluster 2, con 2770 pólizas, recoge los clientes más veteranos con 11.6 años de antigüedad, el ratio de siniestralidad histórica más elevado (0.54) y la mayor proporción de siniestros del año en curso (23.3%). El cluster 3, con 3.110 pólizas, agrupa los vehículos de menor prestaciones con 62 CV, 10.703€ de valor y apenas un 18% de vehículos diésel, con la menor proporción de siniestros (12.3%).
+
+El ínidice de silhouette medio obtenido es de 0.12, el más bajo de todos los modelos aplicados hasta ahora. El cluster 2 obtiene un valor de 0.00 y el cluster 3 presenta valores negativos en una parte de sus observaciones, confirmandonos así que el segmento de clientes veteranos y el segmento de vehículos pequeñis presentan fronteras difusas con independencia de la métrica utilizada.
+
+La tabla cruzada con el k-means euclidiano revela una correspondencia clara únicamente en el segmento de motocicletas, donde 955 de las 959 pólizas del cluster 1 del k-means euclidiano se mantienen en el cluster 3 de Manhattan. Los otros dos segmentos se redistribuyen de forma significativa, con 3.997 pólizas del cluster mayoritario del k-means euclidiano moviendose al cluster 1 de Manhattan. Esta redistribución refleja que la distancia Manhattan, al no elevar al cuadrado las diferencias, traza fronteras distintas entre el segmento de clientes veteranos y el segmento estándar. La comparativa con k-medians muestra una correspondencia igualmente baja, lo que indica que el proceso de inicialización y convergencia de cada algoritmo produce segmentaciones diferentes aun compartiendo la misma métrica de distancia.
+
+En conclusión, la distancia Manhattan confirma la existencia de los tres perfiles de riesgo identificados anteriormente pero produce una segmentación de menor calidad geométrica. Este resultado sugiere que la estructura de los datos de la cartera se adapta mejor a la distancia euclidiana, posiblemente porque las variables físicas del vehículo, que confirmó el PCA forman la dimensión más compacta y relevante de la cartera, presentan una distribución en el espacio normalizado que favorece esta métrica frente a la norma L1.
+
+## DBSCAN y OPTICS
+
+Los algoritmos aplicados hasta ahora, k-means, k-medians y PAM, pertenecen a la familia de métodos de partición: requieren fijar de antemano el número de grupos y asignan obligatoriamente cada observación a un cluster, sin posibilidad de identificar puntos que no pertenezcan a ningún grupo de forma natural. DBSCAN y OPTICS parten de un principio completamente distinto: en lugar de minimizar distancias a centroides, identifican regiones de alta densidad separadas por zonas de baja densidad, permitiendo detectar clusters de geometría arbitraria y etiquetar como ruido las observaciones que no pertenecen a ningún núcleo denso.
+
+En el contexto asegurador esto tiene una implicación directa: las pólizas etiquetadas como ruido por DBSCAN son precisamente aquellas que no encajan en ningún perfil de riesgo definido, lo que las convierte en candidatas naturales a una revisión individualizada por parte del equipo actuarial.
+
+Ambos algoritmos se basan en dos parámetros fundamentales. El radio de vecindad `eps` que define la distancia máxima para considerar que dos observaciones son vecinas, y `minPts` que establece el número mínimo de vecinos dentro de ese radio para que una observación sea considerada punto núcleo. DBSCAN aplica estos parámetros de forma fija produciendo una partición directa, mientras que OPTICS los usa como umbral máximo y genera una ordenación de las observaciones según su densidad local, que puede analizarse visualmente a través del diagrama de alcanzabilidad antes de extraer los clusters.
+
+Dado el volumen del dataset, el análisis se realiza sobre los 6 scores del PCA obtenidos en la fase anterior. Este espacio de trabajo es computacionalmente más eficiente y además elimina la multicolinealidad entre variables, haciendo que las distancias euclídeas sean más representativas de la estructura real de los datos.
+
+### Determinación de `eps`
+
+Antes de aplicar DBSCAN, se debe estimar el valor óptimo del radio de vecindad `eps`. Para ello se utilizará en kNN distance plot, que representa para cada observación la distancia a su k-esimo vecino más cercano ordenada de mayor a menor. El punto donde la curva presenta un codo, es decir, donde la pendiente de descenso se vuelva más pronunciada, sugerirá el valor de ´eps´ a partir del cual las observaciones dejan de pertenecer al núcleo denso de los datos. En este caso, se utiliza k=4, equivalente a minPts-1, como es habitual.
+
+```{r message=FALSE, warning=FALSE}
+# Determinamos eps óptimo con kNN distance plot
+# Usamos los 6 scores del PCA
+set.seed(20252)
+
+# Calculamos distancias kNN
+kNN_dist <- kNNdist(pca_scores, k = 4)
+
+# Representamos el kNN distance plot
+dist_4nn <- sort(kNN_dist, decreasing = TRUE)
+
+plot(dist_4nn,
+     type = "l",
+     xlab = "Observaciones ordenadas",
+     ylab = "Distancia al 4º vecino más cercano",
+     main = "kNN Distance Plot — k=4")
+abline(h = c(1.5, 2, 2.5, 3), col = c("blue", "red", "green", "orange"), lty = 2)
+```
+
+Podemos observar que el codo se sitúa aproximadamente entre los valores 1.5 y 2.0 de distancia. No hay un codo perfectamente nítido, lo cual es coherente con la estructura de la cartera confirmada previamente: los perfiles de riesgo se solapan de forma natural sin fronteras discretas entre grupos. Esto nos da tres valores de eps iniciales para explorar: - eps = 1.5: Umbral restrictivo. - eps = 2.0: Umbral intermedio. - eps = 2.5: umbral más permisivo.
+
+### OPTICS
+
+Se aplica optics con minPts=5 sobre los 6 scores del PCA, para poder analizar la estructura de densidad de la cartera antes de fijar el umbral de corte.
+
+```{r message=FALSE, warning=FALSE}
+# OPTICS con minPts = 5
+set.seed(20252)
+res_optics <- optics(pca_scores, minPts = 5)
+res_optics
+
+# Reachability plot
+plot(res_optics,
+     main = "Diagrama de alcanzabilidad — OPTICS (minPts=5)")
+```
+
+El diagrama de alcanzabilidad obtenido muestra una estructura muy característica: la gran mayoría de las observaciones, desde el registro 1 hasta aproximadamente el 5.500, mantienene una reachability distance muy baja y estable por debajo de 0.5, indicando un núcleo central muy denso que agrupa la mayor parte de la cartera. Alrededor del registro 5.500 se aprecia un pequeño pico que señala una transición entre perfiles, y a partir del registro 8.000 la distancia crece de forma progresiva hasta alcanzar valores extremos en las últimas observaciones, que corresponden a las pólizas más atípicas de la cartera.
+
+Esta estructura no presenta los valles más simétricos y bien delimitados que caracterizan a datasets con clusters naturalmente separados. En su lugar, muestra un gradiente continuo de densidad que confirma que la cartera aseguradora no tiene grupos perfectamente delimitados en el espacio de variables, sino perfiles que se distribuyen de forma continua con una concentración central muy densa y una cola de observaciones progresivamente más atípicas.
+
+```{r message=FALSE, warning=FALSE}
+# Extracción DBSCAN desde OPTICS con tres valores de eps_cl
+res_db1 <- extractDBSCAN(res_optics, eps_cl = 1.5)
+res_db2 <- extractDBSCAN(res_optics, eps_cl = 2.0)
+res_db3 <- extractDBSCAN(res_optics, eps_cl = 2.5)
+
+# Resultados de cada extracción
+table(res_db1$cluster)
+table(res_db2$cluster)
+table(res_db3$cluster)
+
+```
+
+La extracción de DBSCAN desde OPTICS con los tres valores eps_cl produce en todos los casos un único cluster masivo que absorbe entre el 94% y el 99% de las observaciones, con microgrupos residuales de entre 3 y 22 pólizas que no tienen relevancia interpretativa. Este resultado es consistente con el diagrama de alcanzabilidad y confirma que no existen separaciones naturales de densidad entre los perfiles de riesgo de la cartera.
+
+Ahora se aplica DBSCAN de forma independiente con diferentes combinaciones de eps y minPts para explorar si con otros parámetros emergen estructuras más ricas:
+
+```{r message=FALSE, warning=FALSE}
+# DBSCAN independiente: combinaciones de eps y minPts
+set.seed(20252)
+db1 <- dbscan(pca_scores, eps = 1.5, minPts = 5)
+db2 <- dbscan(pca_scores, eps = 1.5, minPts = 10)
+db3 <- dbscan(pca_scores, eps = 2.0, minPts = 5)
+db4 <- dbscan(pca_scores, eps = 2.0, minPts = 10)
+db5 <- dbscan(pca_scores, eps = 2.5, minPts = 5)
+db6 <- dbscan(pca_scores, eps = 2.5, minPts = 10)
+
+# Resultados
+cat("eps=1.5, minPts=5:  "); print(table(db1$cluster))
+cat("eps=1.5, minPts=10: "); print(table(db2$cluster))
+cat("eps=2.0, minPts=5:  "); print(table(db3$cluster))
+cat("eps=2.0, minPts=10: "); print(table(db4$cluster))
+cat("eps=2.5, minPts=5:  "); print(table(db5$cluster))
+cat("eps=2.5, minPts=10: "); print(table(db6$cluster))
+```
+
+Los resultados muestran el mismo patrón en todos los casos: un único cluster principal que absorbe entre el 91% y el 99% de las observaciones y un conjunto de puntos etiquetados como ruido que decrece a medida que eps aumenta. La combinación eps=2.0 y minPts=10 produce el resultado más limpio e interpretable, con un único cluster de 9.710 pólizas y 287 puntos de ruido que representan el 2.9% de la cartera, sin microgrupos residuales que compliquen el análisis.
+
+```{r message=FALSE, warning=FALSE}
+# Nos quedamos con eps=2.0, minPts=10 como modelo seleccionado
+db_final <- db4
+
+# Silhouette — solo para observaciones asignadas a clusters (excluimos ruido)
+idx_no_ruido <- db_final$cluster != 0
+cat("Observaciones en clusters:", sum(idx_no_ruido), "\n")
+cat("Ruido (cluster 0):", sum(!idx_no_ruido), "\n")
+
+# Con un solo cluster el silhouette no es calculable
+# Usamos eps=1.5, minPts=5 que tiene 4 clusters
+db_sil <- db1
+idx_sil <- db_sil$cluster != 0
+dist_pca <- dist(pca_scores[idx_sil, ])
+sil_db <- silhouette(db_sil$cluster[idx_sil], dist_pca)
+cat("Silhouette medio — DBSCAN (eps=1.5, minPts=5):", mean(sil_db[,3]), "\n")
+
+# Caracterización del ruido vs cluster principal
+data_model$cluster_dbscan <- as.factor(db_final$cluster)
+aggregate(vars_cluster,
+          by = list(cluster = db_final$cluster),
+          FUN = mean)
+
+# Proporción de siniestros
+prop.table(table(data_model$cluster_dbscan, data_model$Claim), margin = 1)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+# Reachability plot coloreado con eps=2.0
+plot(res_optics, 
+     main = "Diagrama de alcanzabilidad — OPTICS (eps_cl=2.0)")
+abline(h = 2.0, col = "red", lty = 2)
+```
+
+El índice de silhouette calculado sobre el modelo con eps=1.5 y minPts=5, el único con suficientes clusters para su cómputo, obtiene un valor de 0.37. Este es el valor más alto registrado entre todos los modelos aplicados en este estudio, aunque debe interpretarse con cautela: al excluir del cálculo las observaciones etiquetadas como ruido, la cohesión resultante es artificialmente superior a la que se obtendría considerando la totalidad de la cartera.
+
+El hallazgo más relevante del análisis DBSCAN no es la segmentación en sí sino la caracterización de las observaciones etiquetadas como ruido. Las 287 pólizas del cluster 0 presentan un perfil muy diferenciado: clientes con 12 años de antigüedad media, vehículos de mayor valor (28.939€), conductores de 55 años y el ratio de siniestralidad histórica más elevado de todo el análisis (0.85). La proporción de siniestros en este grupo alcanza el 32.4%, casi el doble que el 18% del cluster principal. Lejos de ser observaciones problemáticas, estas pólizas son perfiles de alto riesgo concentrado que no encajan en el núcleo denso de la cartera y que merecen una atención individualizada por parte del equipo actuarial.
+
+### Comparaiva con los modelos anteriores
+
+DBSCAN y OPTICS confirman la conclusión central del estudio hasta el momento: la cartera aseguradora no presenta una estructura de clusters perfectamente delimitados sino un continuo de perfiles de riesgo con una concentración central muy densa. Mientras que k-means, k-medians y PAM forzaban la asignación de todas las observaciones a tres grupos produciendo segmentaciones interpretables pero con silhouettes moderados, DBSCAN revela que la mayor parte de la cartera forma un único núcleo denso y que los perfiles más diferenciados son precisamente los que los métodos de partición asignaban al segmento de clientes veteranos de alto riesgo.
+
+El número de grupos coincide con el k=3, lo cual no invalida ninguno de los dos enfoques sino que refleja que responden a preguntas distintas. Los métodos de partición son más adecuados cuando el objetivo es segmentar la totalidad de la cartera en grupos accionables para la tarificación, mientras que DBSCAN es más útil para identificar las pólizas que se salen de los patrones habituales y que requieren un tratamiento individualizado.
+
+------------------------------------------------------------------------
+
+# Clasificación supervisada de la siniestralidad
+
+------------------------------------------------------------------------
+
+Este segundo bloque analítico aborda la predicción de la variable objetivo `Claim` mediante técnicas de clasificación supervisada. A diferencia del clustering, donde el algoritmo descubre la estructura de los datos sin información previa, aquí el modelo aprende a partir de ejemplos etiquetados para generalizar hacia nuevas observaciones. El desbalance de clases identificado en el primer notebook, con un 81.5% de pólizas sin siniestro frente a un 18.5% con siniestro, condiciona todas las decisiones de este bloque: desde la partición de los datos hasta la elección de las métricas de evaluación, donde la sensibilidad sobre la clase positiva será el criterio prioritario.
+
+## Split train/test
+
+Para poder aplicar cualquier modelo supervisado es necesario dividir el dataset en dos conjuntos: uno de entrenamiento, sobre el que el modelo aprenderá los patrones, y uno de test, sobre el que se evaluará su capacidad de generalización a datos no vistos. Esta separación es fundamental para detectar sobreajuste, es decir, modelos que memorizan el conjunto de entrenamiento pero generalizan correctamente.
+
+Se selecciona una proporción de 70% para entrenamiento y 30% para test. Con 9.997 observaciones disponibles, esta partición proporciona 6.998 observaciones para entrenar el modelo y 2.999 para evaluarlo, volúmenes suficientes en ambos casos para obtener estimaciones estables. Una proporción más agresiva sería la de 80/20, pero esto podría introducir variabilidad en la estimación de métricas como la sensibilidad sobre la clase minoritaria.
+
+Dado el desbalance de clases, la partición se realiza mediante muestreo estratificado por `Claim`, garantizando que la proporción de pólizas con y sin siniestro se preserve en ambos conjuntos. Sin esta estratificación, una partición aleatoria simple podría concentrar la clase minoritaria de forma desigual entre train y test, distorsionando tanto el entrenamiento como la evaluación.
+
+```{r message=FALSE, warning=FALSE}
+# Partición estratificada 70/30 por Claim
+set.seed(20252)
+idx_train <- createDataPartition(data_model$Claim, p = 0.70, list = FALSE)
+
+train_data <- data_model[idx_train, ]
+test_data  <- data_model[-idx_train, ]
+
+# Verificamos tamaños
+cat("Train:", nrow(train_data), "\n")
+cat("Test: ", nrow(test_data), "\n")
+
+# Verificamos que el desbalance se preserva
+prop.table(table(train_data$Claim))
+prop.table(table(test_data$Claim))
+
+```
+
+La verificación confirma que la partición estratificada preserva el desbalance original de forma precisa en ambos conjuntos. El conjunto de entrenamiento mantiene una proporción de 81.5% de pólizas sin siniestro frente al 18.5% con siniestro, idéntica a la del conjunto de test. Esta consistencia garantiza que el modelo se entrena y evalúa sobre distribuciones equivalentes, evitando que una concentración desigual de la clase minoritaria en alguno de los dos conjuntos distorsione los resultados.
+
+## Árbol de decisión
+
+El árbol de decisión es un modelo de clasificación que aprende reglas jerárquicacs a partir de los datos de entrenamiento, particionando el espacio de variables en regiones cada vez más homogéneas respecto a la variable objetivo. Su principal ventaja en el contexto asegurador es la interpretabilidad: las reglas generadas pueden ser leídas y validadas directamente por el equipo actuarial sin necesidad de conocimientos estadísticos avanzados.
+
+Se utiliza el algoritmo CART implementado por el paquete `rpart`, que construye el árbol minimizando la impureza de Gini en cada nodo. El modelo se entrena sobre las variables de `train_data`, excluyendo las columnas de cluster añadidas anteriormente, con `Claim` como variable objetivo.
+
+Dado el desbalance de clases, se incorporan pesos inversamente proporcionales a la frecuencia de cada clase en el entrenamiento a penalizar los falsos negativos, es decir, las pólizas con siniestro que el modelo clasificaría incorrectamente como sin siniestro. En el contexto asegurador el coste de no detectar un siniestro es superior al de una falsa alarma, por lo que esta penalización está alineada con el criterio de éxito definido.
+
+Se obitenen dos versiones del modelo: sin poda y con poda mediante el parámetro de complejidad `cp` óptimo seleccionado por validación cruzada, comparando ambos resultados en términos de precisión, sensibilidad, especificidad y F1-score.
+
+### Árbol sin poda
+
+```{r message=FALSE, warning=FALSE}
+# Función de métricas
+metricas <- function(real, predicho, clase_positiva = "Con siniestro") {
+  tp <- sum(real == clase_positiva & predicho == clase_positiva)
+  tn <- sum(real != clase_positiva & predicho != clase_positiva)
+  fp <- sum(real != clase_positiva & predicho == clase_positiva)
+  fn <- sum(real == clase_positiva & predicho != clase_positiva)
+  accuracy  <- (tp + tn) / (tp + tn + fp + fn)
+  precision <- tp / (tp + fp)
+  recall    <- tp / (tp + fn)
+  especif   <- tn / (tn + fp)
+  f1        <- 2 * (precision * recall) / (precision + recall)
+  data.frame(
+    Métrica = c("Accuracy", "Precision", "Recall", "Especificidad", "F1"),
+    Valor   = round(c(accuracy, precision, recall, especif, f1), 3)
+  )
+}
+
+```
+
+```{r message=FALSE, warning=FALSE}
+# Excluimos las columnas de cluster añadidas en los ejercicios anteriores
+vars_excluir <- c("cluster_original", "cluster_norm", "cluster_medians",
+                  "cluster_pam", "cluster_manhattan", "cluster_dbscan")
+
+train_model <- train_data[, !names(train_data) %in% vars_excluir]
+test_model  <- test_data[,  !names(test_data)  %in% vars_excluir]
+
+# Calculamos los pesos inversamente proporcionales a la frecuencia de cada clase
+# Esto penaliza los falsos negativos sin alterar la distribución original de los datos
+freq_clases <- prop.table(table(train_model$Claim))
+pesos_clase <- 1 / freq_clases
+pesos_caso  <- ifelse(train_model$Claim == "Con siniestro",
+                      pesos_clase["Con siniestro"],
+                      pesos_clase["Sin siniestro"])
+
+cat("Peso Sin siniestro: ", round(pesos_clase["Sin siniestro"], 3), "\n")
+cat("Peso Con siniestro:", round(pesos_clase["Con siniestro"], 3), "\n")
+```
+
+```{r message=FALSE, warning=FALSE}
+# Árbol sin poda
+# minsplit: mínimo de observaciones en un nodo para intentar una partición
+# minbucket: mínimo de observaciones en un nodo hoja
+# cp = 0 desactiva la poda automática para obtener el árbol completo
+set.seed(20252)
+arbol_sin_poda <- rpart(
+  Claim ~ .,
+  data    = train_model,
+  method  = "class",
+  weights = pesos_caso,
+  control = rpart.control(
+    minsplit  = 20,
+    minbucket = 7,
+    cp        = 0,
+    maxdepth  = 10
+  )
+)
+
+# Resumen del árbol
+printcp(arbol_sin_poda)
+```
+
+```{r message=FALSE, warning=FALSE, fig.width=14, fig.height=8, out.width="100%"}
+
+# Visualizamos los primeros niveles del árbol
+arbol_viz <- prune(arbol_sin_poda, 
+                   cp = arbol_sin_poda$cptable[4, "CP"])
+rpart.plot(arbol_viz,
+           type        = 4,
+           extra       = 104,
+           box.palette = c("#76B7B2", "#E15759"),
+           main        = "Árbol sin poda — primeros niveles")
+
+```
+
+```{r message=FALSE, warning=FALSE}
+# Reglas más relevantes: los 10 nodos con mayor cobertura
+reglas <- rpart.rules(arbol_sin_poda, cover = TRUE)
+head(reglas, 10)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Predicción sobre test y matriz de confusión
+pred_sin_poda <- predict(arbol_sin_poda, test_model, type = "class")
+
+# Matriz de confusión
+tabla_sin_poda <- table(Real = test_model$Claim, Predicho = pred_sin_poda)
+print(tabla_sin_poda)
+
+# Métricas
+metricas(test_model$Claim, pred_sin_poda)
+```
+
+```{r message=FALSE, warning=FALSE}
+imp_df <- data.frame(
+  Variable    = names(arbol_sin_poda$variable.importance),
+  Importancia = arbol_sin_poda$variable.importance
+) %>%
+  arrange(desc(Importancia)) %>%
+  head(10)
+
+ggplot(imp_df, aes(x = reorder(Variable, Importancia), y = Importancia)) +
+  geom_col(fill = "#4E79A7") +
+  coord_flip() +
+  labs(title = "Importancia de variables — árbol sin poda (Top 10)",
+       x = NULL, y = "Importancia") +
+  theme_minimal(base_size = 13)
+```
+
+Para complementar la lectura del árbol, el gráfico de importancia de variables resume la contribución acumulada de cada predictor a lo largo de todas las particiones realizadas. A diferencia de la visualización del árbol, que muestra únicamente las primeras divisiones, la importancia de variables recoge el peso de cada atributo a lo largo de las 113 particiones internas del árbol, que junto con sus 114 nodos hoja suman los 227 nodos totales de la estructura.
+
+Como hemos podido ver, el árbol sin poda genera una estructura de 113 nodos con 19 variables utilizadas, lo que evidencia un modelo de alta complejidad que ha aprendido los patrones del conjunto de entrenamiento con gran detalle. La variable raíz `R_Claims_history`, es el ratio de siniestralidad histórica, que concentra la primera y más determinante partición del árbol con un CP de 0.674, explicando por sí sola casi el 68% del error inicial en una única división. Este resultado es coherente con el análisis exploratorio realizado, donde el historial de siniestralidad emergió como el predictor más potente del riesgo individual.
+
+Las variables que participan en las particiones siguientes combinan el perfil del vehículo (`Value_vehicle`, `Power`, `Cylinder_capacity`, `Weight`) con el perfil temporal del cliente (`Policy_age`, `Years_licence`, `Seniority`) y variables de actividad en cartera (`N_claims_history`, `Policies_in_force`, `Max_policies`). Las variables `Area` y `Type_risk` aparecen en niveles intermedios del árbol, mientras que `Distribution_channel` y `Type_fuel` tienen una presencia más marginal.
+
+Las reglas extraídas muestran perfiles de bajo riesgo caracterizados por ratios de siniestralidad histórica moderados combinados con pólizas antiguas, conductores experimentados y vehículos de gama media. La cobertura individual de cada regla es inferior al 1%, lo que refleja la hiperespecialización del árbol sin poda: aprende combinaciones muy precisas de condiciones que en su mayoría describen subgrupos muy pequeños de la cartera.
+
+Sobre el conjunto de test, el modelo alcanza un recall de 0.830, superando el umbral mínimo del 60% definido como criterio de éxito previamente y detectando correctamente 459 de las 553 pólizas con siniestro. El accuracy de 0.795 es ligeramente inferior a la proporción base del 81,5%, lo que indica que los pesos aplicados han desplazado correctamente el modelo hacia la clase minoritaria a costa de introducir más falsos positivos: 522 pólizas sin siniestro clasificadas incorrectamente como con siniestro, reflejado en la especificidad de 0.787. La precisión de 0.468 y el F1-score de 0.598 confirman este equilibrio: el modelo prioriza no perder siniestros reales frente a evitar falsas alarmas, lo cual está alineado con el criterio de negocio definido.
+
+El error de validación cruzada del `printcp` muestra que `xerror` empieza a crecer consistentemente a partir del nodo 3, señal de sobreajuste progresivo a medida que el árbol se profundiza.
+
+### Árbol con poda
+
+```{r message=FALSE, warning=FALSE}
+# Seleccionamos el cp óptimo: el de menor xerror en la tabla de validación cruzada
+cp_optimo <- arbol_sin_poda$cptable[
+  which.min(arbol_sin_poda$cptable[, "xerror"]), "CP"]
+
+cat("CP óptimo:", round(cp_optimo, 6), "\n")
+
+# Visualizamos la evolución del xerror para contextualizar la elección
+plotcp(arbol_sin_poda)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Árbol podado con el cp óptimo
+arbol_podado <- prune(arbol_sin_poda, cp = cp_optimo)
+
+# Resumen
+printcp(arbol_podado)
+cat("Nodos del árbol sin poda:", nrow(arbol_sin_poda$frame), "\n")
+cat("Nodos del árbol podado:  ", nrow(arbol_podado$frame), "\n")
+```
+
+```{r message=FALSE, warning=FALSE, fig.width=14, fig.height=8, out.width="100%"}
+# Visualización del árbol podado
+rpart.plot(arbol_podado,
+           type        = 4,
+           extra       = 104,
+           box.palette = c("#76B7B2", "#E15759"),
+           main        = "Árbol de decisión podado — CART")
+```
+
+```{r message=FALSE, warning=FALSE}
+# Predicción sobre test
+pred_podado <- predict(arbol_podado, test_model, type = "class")
+
+# Matriz de confusión
+tabla_podado <- table(Real = test_model$Claim, Predicho = pred_podado)
+print(tabla_podado)
+
+# Métricas
+metricas(test_model$Claim, pred_podado)
+```
+
+La validación cruzada identifica un CP óptimo de 0.00327, que corresponde al punto de mínimo `xerror` en la tabla de validación cruzada. El gráfico `plotcp` confirma visualmente esta elección: el error se estabiliza con muy pocos nodos y no mejora de forma relevante al aumentar la complejidad del árbol, lo que indica que la mayor parte de la capacidad predictiva está en las primeras particiones.
+
+El árbol podado queda reducido a 7 nodos utilizando únicamente dos variables `R_Claims_hisdtory` y `Policy_age`. La estructura es completamente legible: una póliza con un ratio de siniestralidad histórica igual o superior a 0.25 se clasifica directamente como con siniestro con una probabilidad del 77%. Por encima de 0.51 esa probabilidad asciende al 85%. Para los casos con ratio inferior a 0.25, que representan el 38% de la carteram el modelo predice sin siniestro con una confianza del 95%. La zona de incertidumbre se concentra en el tramo intermedio de ratio entre 0.25 y 0.51, donde la antigüedad de la póliza actúa como criterio de desempate: pólizas con más de 6.9 años de antigüedad se clasifican como sin siniestro con un 61% de probabilidad, mientras que las más recientes se clasifican con siniestro con un 57%.
+
+**Comparativa sin poda vs podado**
+
+| Métrica       | Sin Poda | Podado |
+|---------------|----------|--------|
+| Accuracy      | 0.795    | 0.791  |
+| Precisión     | 0.468    | 0.467  |
+| Recall        | 0.830    | 0.928  |
+| Especificidad | 0.787    | 0.760  |
+| F1-score      | 0.598    | 0.621  |
+| Nodos         | 227      | 7      |
+
+El árbol podado mejora el recall en casi 10 puntos porcentuales, pasando de 0.83 a 0.928, detectando 513 de los 553 siniestros reales frente a los 459 del modelo complejo. Esta mejora tiene un coste moderado en especificidad, que cae de 0.787 a 0.760, generando 64 falsos positivos adicionales. El F1-score mejora de 0.598 a 0.621, confirmando que el árbol podado ofrece mejor equilibrio global entre precisión y recall.
+
+Desde el punto de vista actuarial, la poda produce un resultado aparentemente paradójico pero metodológicamente coherente: un modelo más simple generaliza mejor que uno complejo porque evita aprender del ruido del conjunto de entrenamiento. El árbol de 227 nodos había memorizado combinaciones de variables muy específicas que no se reproducen en el test, mientras que el árbol de 7 nodos captura las dos reglas fundamentales del negocio: el historial de siniestralidad es el predictor dominante, y la antigüedad de la póliza aporta información adicional solo en los casos de frontera.
+
+## Random Forest
+
+El Random Forest es un modelo de ensamble que construye múltiples árboles de decisión de forma independiente sobre muestras aleatorias del conjunto de entrenamiento, combinando sus predicciones mediante votación mayoritaria. A diferencia del árbol individual, cada árbol del bosque se entrena además sobre un subconjunto aleatorio de variables en cada partición, lo que reduce la correlación entre árboles y mejora la capacidad de generalización del modelo.
+
+En el contexto de este estudio, el Random Forest se aplica como modelo alternativo al árbol CART, manteniendo el mismo conjunto de entrenamiento y test para que la comparación entre ambos sea directa. Se incorporan los mismos pesos de clase utilizados anteriormente para preservar la penalización sobre los falsos negativos.
+
+A diferencia del árbol podado, cuya interpretabilidad es su principal ventaja, el Random Forest sacrifica la legibilidad individual de las reglas a cambio de una mayor robustez predictiva. Para compensar esta pérdida de transparencia se analizará la importancia de variables, que permite identificar qué predictores contribuyen más a la capacidad discriminante del modelo en el conjunto de los 500 árboles entrenados.
+
+```{r message=FALSE, warning=FALSE}
+# Entrenamos el Random Forest
+# ntree = 500 es suficiente para carteras de este tamaño
+# importance = TRUE para poder extraer la importancia de variables después
+set.seed(20252)
+rf_model <- randomForest(
+  Claim ~ .,
+  data       = train_model,
+  ntree      = 500,
+  importance = TRUE,
+  classwt    = as.numeric(pesos_clase)
+)
+
+print(rf_model)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Error OOB vs número de árboles
+plot(rf_model,
+     main = "Error OOB vs número de árboles — Random Forest")
+legend("topright",
+       legend = colnames(rf_model$err.rate),
+       col    = 1:3,
+       lty    = 1:3)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Importancia de variables
+imp_rf <- data.frame(
+  Variable    = rownames(importance(rf_model)),
+  MeanDecreaseAccuracy = importance(rf_model)[, "MeanDecreaseAccuracy"],
+  MeanDecreaseGini     = importance(rf_model)[, "MeanDecreaseGini"]
+) %>%
+  arrange(desc(MeanDecreaseAccuracy))
+
+ggplot(imp_rf, aes(x = reorder(Variable, MeanDecreaseAccuracy),
+                   y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "#4E79A7") +
+  coord_flip() +
+  labs(title = "Importancia de variables — Random Forest",
+       x = NULL, y = "Mean Decrease Accuracy") +
+  theme_minimal(base_size = 12)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Predicción sobre test
+pred_rf <- predict(rf_model, test_model)
+
+# Matriz de confusión
+tabla_rf <- table(Real = test_model$Claim, Predicho = pred_rf)
+print(tabla_rf)
+
+# Métricas
+metricas(test_model$Claim, pred_rf)
+```
+
+El Random Forest entrena 500 árboles con 4 variables candidatas en cada partición, alcanzando una tasa de error OOB global del 13.96%. El gráfico de error OOB confirma que el modelo se estabiliza a partir de los 200 árboles aproximadamente, por lo que 500 es un número suficiente sin necesidad de incrementarlo.
+
+El gráfico de importancia de variables refuerza y enriquece los resultados del árbol CART. `R_Claims_history` y `Policy_age` emergen de nuevo como los dos predictores dominantes, con una ventaja muy amplia sobre el resto, confirmando que el historial de siniestralidad y la antigüedad de la póliza son las dimensiones fundamentales del riesgo en esta cartera. A partir de la tercera posición aparecen `N_claims_history`, `Policies_in_force` y `Max_products`, variables que el árbol podado había descartado pero que el Random Forest recupera al explorar combinaciones de variables en miles de particiones. En el extremo opuesto, `Value_vehicle`, `Payment`, `Type_fuel` y `Distribution_channel` presentan una importancia cercana a cero, en línea con lo observado en el análisis exploratorio previo.
+
+Sobre el conjunto de test el modelo alcanza un accuracy de 0.856, el más alto de todos los modelos evaluados, con una especificidad de 0.942 que refleja una clasificación muy precisa de las pólizas sin siniestro. Sin embargo, el recall cae a 0.477, detectando únicamente 264 de los 553 siniestros reales y quedando muy por debajo del umbral mínimo del 60% definido como criterio de éxito. Este resultado indica que los pesos de clase no han tenido el mismo efecto que en el árbol CART, y que el Random Forest con esta configuración está optimizando la clase mayoritaria a costa de la minoritaria.
+
+### Comparativa
+
+| Métrica       | Árbol sin Poda | Árbol podado | Random Forest |
+|---------------|----------------|--------------|---------------|
+| Accuracy      | 0.795          | 0.791        | 0.856         |
+| Precisión     | 0.468          | 0.467        | 0.649         |
+| Recall        | 0.830          | 0.928        | 0.477         |
+| Especificidad | 0.787          | 0.760        | 0.942         |
+| F1-score      | 0.598          | 0.621        | 0.550         |
+
+Los tres modelos presentan perfiles complementarios que reflejan el equilibrio entre sensibilidad y especificidad. El árbol podado es el modelo más adecuado para el objetivo de negocio definido: maximizar la detección de siniestros con un recall de 0.928, superando ampliamente el umbral mínimo del 60%, con un árbol de solo 7 nodos interpretable directamente por el equipo actuarial. El Random Forest obtiene el mejor accuracy y precisión pero sacrifica el recall hasta niveles inaceptables para el criterio de negocio establecido. El árbol sin poda queda en una posición intermedia, con un recall razonable pero una complejidad de 227 nodos que dificulta su interpretación y auditoría.
+
+En un entorno bancario o asegurador, la elección entre estos modelos dependería del coste relativo de los falsos negativos frente a los falsos positivos. Con la asimetría de costes propia del negocio asegurador, donde no detectar un siniestro tiene consecuencias directas sobre la dotación de reservas técnicas, el árbol podado ofrece el mejor equilibrio entre interpretabilidad, simplicidad y capacidad de detección de la clase de riesgo.
+
+------------------------------------------------------------------------
+
+# Limitaciones, riesgos y conclusiones
+
+------------------------------------------------------------------------
+
+**Limitaciones del dataset**
+
+El dataset presenta varias limitaciones que condicionan la solidez de los resultados obtenidos tanto en el bloque no supervisado como en el supervisado.
+
+En primer lugar, el periodo de observación cubre únicamente los años 2015-2018, lo que implica que los modelos entrenados no capturan cambios estructurales posteriores del mercado asegurador español, como el impacto de la pandemia sobre la siniestralidad o la evolución del parque automovilístico hacia vehículos eléctricos e híbridos. Un modelo entrenado sobre datos de este periodo podría no generalizar correctamente a una cartera actual.
+
+En segundo lugar, la variable `R_Claims_history` ha demostrado ser el predictor dominante en todos los modelos supervisados y una de las dimensiones más relevantes en el clustering. Sin embargo, esta variable sintetiza el historial completo de la póliza en un único ratio, perdiendo información sobre la distribución temporal de los siniestros. Un cliente con tres siniestros en el primer año y ninguno en los cinco siguientes presenta el mismo ratio que uno con siniestros distribuidos uniformemente, aunque su perfil de riesgo actual sea muy diferente.
+
+En tercer lugar, el dataset carece de variables de comportamiento financiero del asegurado, como el historial de pagos o la existencia de impagos, que en carteras reales tienen una correlación significativa con la siniestralidad. Su ausencia limita la capacidad predictiva de los modelos, especialmente para la clase minoritaria.
+
+Finalmente, la variable `Length` fue excluida por su alto porcentaje de valores nulos (9.6%) y su correlación con `Weight` y `Cylinder_capacity`. Una limitación de esta decisión es que los nulos podrían estar concentrados en un segmento concreto de la cartera, lo que introduciría un sesgo sistemático en la exclusión que no es posible verificar sin acceso al sistema de información original de la aseguradora.
+
+**Limitaciones de los modelos**
+
+**Modelos no supervisados**
+
+Los índices de silhouette obtenidos son moderados o bajos en todos los casos, con el k-means normalizado alcanzando únicamente 0.21 y el k-medians 0.13. Estos valores reflejan que la cartera no presenta una estructura de clusters perfectamente delimitada sino un continuo de perfiles de riesgo que los algoritmos de partición fuerzan artificialmente en grupos discretos. La consecuencia práctica es que las fronteras entre segmentos son difusas y una póliza fronteriza podría ser asignada a un cluster diferente con pequeñas variaciones en los datos de entrada.
+
+El k-means sobre datos originales obtuvo un silhouette de 0.52, aparentemente superior, pero este valor refleja únicamente la compacidad de las variables de mayor magnitud numérica y no la riqueza interpretativa de la segmentación. Usarlo como criterio de selección habría llevado a una segmentación dominada por las características físicas del vehículo, perdiendo la dimensión del perfil del cliente que resultó ser la más relevante desde el punto de vista actuarial.
+
+**Modelos supervisados**
+
+El principal riesgo del árbol sin poda es el sobreajuste. Con 227 nodos y reglas con cobertura inferior al 1%, el modelo ha memorizado patrones específicos del conjunto de entrenamiento que no se reproducen en datos nuevos. Aunque su recall de 0.830 es satisfactorio, la complejidad del árbol lo hace inauditable e indefendible ante un comité de riesgos o ante el regulador.
+
+El árbol podado resuelve el problema de sobreajuste pero introduce un riesgo de infraajuste en la zona de incertidumbre: con solo dos variables y 7 nodos, el modelo puede no capturar perfiles de riesgo atípicos que requieren más variables para ser correctamente identificados. Las 40 pólizas con siniestro clasificadas como sin siniestro por el árbol podado son precisamente estos casos frontera que una regla tan simple no puede discriminar.
+
+El Random Forest, pese a obtener el mejor accuracy, no cumple el criterio de éxito propuesto inicialmente con un recall de 0.477. Este resultado indica que los pesos de clase no han sido suficientes para compensar el desbalance del 81,5%/18,5% en este modelo de ensamble. Se recomienda probar técnicas adicionales como SMOTE sobre el conjunto de entrenamiento o el ajuste del umbral de clasificación hacia valores inferiores a 0.5 para incrementar la sensibilidad sobre la clase minoritaria.
+
+**Conclusiones**
+
+Este estudio ha abordado el problema de gestión del riesgo de una cartera aseguradora de vehículos de motor desde dos perspectivas complementarias: la segmentación no supervisada de perfiles de riesgo y la predicción supervisada de siniestralidad. Los resultados de ambos bloques convergen en un mensaje coherente que aporta valor actuarial concreto.
+
+El clustering ha identificado tres segmentos estables con comportamientos de siniestralidad claramente diferenciados. El cluster de motocicletas presenta una tasa de siniestros del 7.8%, menos de la mitad de la media de la cartera, lo que sugiere que este segmento está siendo tarificado con un margen de seguridad excesivo. El cluster de clientes veteranos, con una tasa del 20.7% y un ratio de siniestralidad histórica de 0.49, representa el segmento de mayor riesgo concentrado y el que más atención merece en la política de renovación. El perfil estándar, mayoritario con 6.664 pólizas, presenta una siniestralidad del 19.2% muy cercana a la media global, confirmando que representa el riesgo base de la cartera.
+
+El hallazgo más relevante del bloque no supervisado son las 287 pólizas identificadas como ruido por DBSCAN, con una tasa de siniestros del 32.4% y un ratio de siniestralidad histórica de 0.85. Estos perfiles no encajan en ninguno de los clusters principales precisamente porque su comportamiento es extremo, y son los candidatos más urgentes a una revisión individualizada de prima en la siguiente renovación.
+
+La validación cruzada entre ambos bloques es clara: las dos variables que el árbol podado selecciona como únicas predictoras, `R_Claims_history` y `Policy_age`, son exactamente las dimensiones que mejor caracterizan los clusters identificados de forma no supervisada. El cluster de clientes veteranos se define precisamente por su elevado ratio de siniestralidad histórica y su larga antigüedad de póliza, y es el grupo que el árbol podado clasificaría sistemáticamente como con siniestro. Esta convergencia entre el análisis no supervisado y el supervisado aporta robustez metodológica a las conclusiones y confirma que ambos enfoques están capturando la misma estructura de riesgo subyacente en la cartera.
+
+La recomendación operativa para el equipo actuarial es doble. A corto plazo, implementar el árbol podado como herramienta de screening en el proceso de renovación, priorizando la revisión de primas para las pólizas con `R_Claims_history` superior a 0.25. A medio plazo, enriquecer el dataset con variables de comportamiento financiero y ampliar el periodo de observación para mejorar la capacidad predictiva de los modelos, con el objetivo de superar el umbral del 60% de recall también en el Random Forest mediante técnicas de balanceo de clases más sofisticadas.
+
+------------------------------------------------------------------------
+
+# Notas de proceso
+
+------------------------------------------------------------------------
+
+- **Pesos vs SMOTE para el desbalance de clases**. Para tratar el desbalance de clases (81.5%/18.5%) había dos caminos razonables: pesos inversamente proporcionales a la frecuencia de cada clase, o generar observaciones sintéticas de la clase minoritaria con SMOTE. Se decidió optar por los pesos porque preservan la distribución real de la cartera y producen reglas directamente interpretables, mientras que SMOTE introduce datos artificiales que pueden acabar distorsionando lo que el árbol aprende. Para este proyecto, donde la capacidad de explicar las reglas a un equipo de negocio importa tanto como el rendimiento puro, la interpretabilidad tuvo preferencia.  
+- **Por qué el Random Forest no reacciona igual a los pesos que el árbol simple.** El Random Forest, pese a obtener el mejor accuracy, no supera el umbral mínimo de recall (60%), quedándose en 0.477 frente al 0.928 del árbol podado usando los mismos pesos. La diferencia tiene una explicación concreta: en `rpart` los pesos se aplican directamente sobre la función de impureza en cada nodo, afectando todas las particiones del árbol. En `randomForest`, en cambio, los pesos actúan sobre el muestreo bootstrap de cada árbol individual, pero cada uno de esos árboles sigue optimizando por separado hacia la clase mayoritaria, así que el efecto de compensación se diluye en el conjunto. Se recomienda combinar `classwt` con un ajuste del umbral de clasificación, o directamente SMOTE sobre el conjunto de entrenamiento.
+
+- **Lectura del reachability plot de OPTICS.** El gráfico no muestra valles simétricos bien delimitados, lo que indica que los datos no tienen clusters separados por regiones de baja densidad, sino un continuo: un núcleo central muy denso y una cola de observaciones cada vez más atípicas. Esto significa que DBSCAN no iba a encontrar múltiples clusters bien diferenciados, sino un grupo principal con puntos de ruido en la periferia, que fue exactamente lo que pasó, y lo que reorientó el análisis hacia caracterizar esas pólizas de "ruido" en vez de comparar clusters entre sí. Esas pólizas atípicas resultaron ser precisamente los perfiles de riesgo más concentrado de toda la cartera.
+
+
+------------------------------------------------------------------------
+
+# Recursos
+
+------------------------------------------------------------------------
+
+**Dataset y paper principal**
+
+-   Segura-Gisbert, J., Lledó, J., & Pavía, J. M. (2024). Dataset of an actual motor vehicle insurance portfolio. *European Actuarial Journal*. <https://doi.org/10.1007/s13385-024-00398-0>
+
+-   Mendeley Data. (2024). Motor vehicle insurance data. <https://doi.org/10.17632/5cxyb5fp4f.2>
+
+**Material de la asignatura**
+
+-   Chapman, P., Clinton, J., Kerber, R., Khabaza, T., Reinartz, T., Shearer, C., & Wirth, R. (2000). *CRISP-DM 1.0: Step-by-step data mining guide*. SPSS Inc.
+
+-   Recursos de programación para minería de datos:
+
+    -   [Espacio de recursos UOC para ciencia de datos](http://@datascience.recursos.uoc.edu/es/)
+    -   [Buscador de código R](https://rseek.org/)\
+    -   [Colección de cheatsheets en R](https://rstudio.com/resources/cheatsheets/)
+
+------------------------------------------------------------------------

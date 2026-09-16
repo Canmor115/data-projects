@@ -1,0 +1,17 @@
+# R specific
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj
+
+# R Markdown output (keep .html, ignore PDF/Word)
+*.pdf
+*.docx
+
+# Dataset (no se sube por tamaño, ver data/README.md)
+data/*.csv
+
+# OS files
+.DS_Store
+Thumbs.db
