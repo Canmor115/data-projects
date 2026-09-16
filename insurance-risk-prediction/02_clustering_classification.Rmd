@@ -864,6 +864,13 @@ rpart.plot(arbol_podado,
 ```
 
 ```{r message=FALSE, warning=FALSE}
+png("pruned_tree.png", width = 1600, height = 1200, res = 200)
+rpart.plot(pruned_tree, ...)  # usa exactamente los mismos parámetros que ya tienes
+dev.off()
+```
+
+
+```{r message=FALSE, warning=FALSE}
 # Predicción sobre test
 pred_podado <- predict(arbol_podado, test_model, type = "class")
 
