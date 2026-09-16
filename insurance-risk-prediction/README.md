@@ -38,7 +38,7 @@ Son dos notebooks que van en orden: el primero (`01_data_preparation.Rmd`) limpi
 ## 📊 Dataset
 
 **Motor vehicle insurance data**
-Fuente: [Mendeley Data — Segura-Gisbert, Lledó & Pavía (2024)](https://data.mendeley.com/) · CC BY 4.0
+Fuente: [Mendeley Data — Segura-Gisbert, Lledó & Pavía (2024)](https://data.mendeley.com/datasets/5cxyb5fp4f/2) · CC BY 4.0
 
 - **105.555 pólizas originales**, muestra de trabajo de 10.000 (semilla fija para reproducibilidad)
 - **Variables de vehículo, cliente e historial** — potencia, cilindrada, peso, valor, antigüedad, ratio de siniestros históricos

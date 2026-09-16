@@ -33,6 +33,15 @@ Análisis de 30 años de datos fiscales (1995–2024) para 182 países. Construc
 
 ---
 
+### 🚗 [Segmentación de riesgo y predicción de siniestralidad en seguros de vehículos](./insurance-risk-segmentation/)
+**R · K-means · DBSCAN · rpart · Random Forest · PCA/SVD**
+
+Segmentación no supervisada (K-means, K-medians, PAM, DBSCAN) y predicción supervisada de siniestralidad sobre una cartera real de seguros de vehículos de motor, con reducción de dimensionalidad vía PCA/SVD. El árbol de decisión podado, entrenado de forma independiente, converge en las mismas variables que definen los clusters de mayor riesgo (validación cruzada entre ambos enfoques). Hallazgo central: las 287 pólizas marcadas como "ruido" por DBSCAN presentan la siniestralidad más alta de toda la cartera (32.4%), muy por encima de cualquier cluster principal.
+
+🔗 [Ver análisis completo →](https://canmor115.github.io/data-projects/insurance-risk-segmentation/02_clustering_classification.html)
+
+---
+
 ## 🛠️ Stack tecnológico
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
