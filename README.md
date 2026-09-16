@@ -38,7 +38,7 @@ Análisis de 30 años de datos fiscales (1995–2024) para 182 países. Construc
 
 Segmentación no supervisada (K-means, K-medians, PAM, DBSCAN) y predicción supervisada de siniestralidad sobre una cartera real de seguros de vehículos de motor, con reducción de dimensionalidad vía PCA/SVD. El árbol de decisión podado, entrenado de forma independiente, converge en las mismas variables que definen los clusters de mayor riesgo (validación cruzada entre ambos enfoques). Hallazgo central: las 287 pólizas marcadas como "ruido" por DBSCAN presentan la siniestralidad más alta de toda la cartera (32.4%), muy por encima de cualquier cluster principal.
 
-🔗 [Ver análisis completo →](https://github.com/Canmor115/data-projects/blob/main/insurance-risk-prediction/02_clustering_classification.html)
+🔗 [Ver análisis completo →](https://canmor115.github.io/data-projects/insurance-risk-prediction/02_clustering_classification.html)
 
 ---
 
